@@ -3,6 +3,11 @@ import streamlit as st
 import plotly.express as px
 
 # -----------------------------
+# FINAL VERIFICATION (SECRETS CHECK)
+# -----------------------------
+st.write("Secrets loaded:", "OPENAI_API_KEY" in st.secrets)
+
+# -----------------------------
 # PAGE SETUP
 # -----------------------------
 st.set_page_config(page_title="Personal Finance Dashboard", layout="wide")
