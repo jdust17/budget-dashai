@@ -479,3 +479,5 @@ else:
     else:
         st.info("Click **Generate insights with AI** to create personalized insights for the selected period.")
 
+import streamlit as st
+st.write("Secrets loaded:", "OPENAI_API_KEY" in st.secrets)
