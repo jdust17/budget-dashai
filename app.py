@@ -398,16 +398,14 @@ Rules:
     model_name = "gpt-4.1-mini"
 
     try:
-        resp = client.chat.completions.create(
+        resp = client.responses.create(
             model=model_name,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
+            instructions=system_msg,
+            input=user_msg,
             temperature=0.3,
         )
 
-        text = resp.choices[0].message.content.strip()
+        text = resp.output_text.strip()
         return {"text": text, "model": model_name}
 
     except AuthenticationError:
