@@ -164,7 +164,7 @@ def _safe_float(x):
     except:
         return 0.0
 
-# ✅ ADD: money-safe formatter for payload numbers (ints, no decimals)
+# ✅ ADD: integer money formatter for payload (removes decimals at the source)
 def _safe_money(x):
     try:
         return int(round(float(x)))
@@ -239,7 +239,7 @@ def build_insight_payload(
     if len(under_sorted) > 0:
         payload["biggest_under_budget"] = {
             "Category": str(under_sorted.loc[0, "Category"]),
-            "delta": _safe_money(over_sorted.loc[0, "delta"]) if False else _safe_money(under_sorted.loc[0, "delta"]),
+            "delta": _safe_money(under_sorted.loc[0, "delta"]),
             "Actual": _safe_money(under_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
             "Expected": _safe_money(under_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
         }
@@ -289,7 +289,7 @@ def generate_ai_insights_cached(period_key: str, payload: dict) -> dict:
         from openai import OpenAI
         from openai import AuthenticationError, PermissionDeniedError, RateLimitError, APIConnectionError, APIStatusError
     except Exception as e:
-        return {"error": f"Missing dependency: openai. Add `openai` to requirements.txt. Details: {e}"}
+        return {"error": f"Missing dependency: openai. Add openai to requirements.txt. Details: {e}"}
 
     api_key = None
     try:
@@ -302,14 +302,16 @@ def generate_ai_insights_cached(period_key: str, payload: dict) -> dict:
 
     client = OpenAI(api_key=str(api_key).strip())
 
+    # ✅ UPDATED: add formatting rule
     system_msg = (
         "You are a helpful personal finance analyst. "
         "Use ONLY the numbers in the provided JSON payload. "
         "Write 2-3 insights and 1-2 concrete recommendations. "
         "Be concise, specific, and do not mention the JSON or internal fields. "
-        "FORMAT RULE: Every monetary amount must be formatted like $12,345 (no cents/decimals)."
+        "FORMAT RULE: Any money amount must be written like $12,345 (no decimals)."
     )
 
+    # ✅ UPDATED: reinforce formatting rule
     user_msg = f"""
 Here is an aggregated summary of finances for a selected period (JSON):
 
@@ -323,7 +325,7 @@ Rules:
 - Do NOT hallucinate or add numbers not present.
 - If month-over-month data is missing, skip MoM commentary.
 - Tone: friendly, practical, plain English.
-- IMPORTANT: Format ALL money as $X,XXX with commas and NO decimals. Do not write bare numbers.
+- IMPORTANT: Format all money as $X,XXX with commas and NO decimals. Do not write bare numbers.
 """
 
     model_name = "gpt-4.1-mini"
@@ -342,7 +344,7 @@ Rules:
     except AuthenticationError:
         return {"error": "OpenAI authentication failed. Re-check OPENAI_API_KEY in Streamlit secrets (valid key, no extra spaces)."}
     except PermissionDeniedError:
-        return {"error": f"Permission denied for model `{model_name}`. Your key may not have access to this model."}
+        return {"error": f"Permission denied for model {model_name}. Your key may not have access to this model."}
     except RateLimitError:
         return {"error": "Rate limited. Try again in a minute."}
     except APIConnectionError:
@@ -822,4 +824,28 @@ with tab_savings:
             savings_variance_df,
             x="Category",
             y="Variance",
-            color
+            color="Variance"
+        )
+
+        fig_savings_variance.update_layout(template="plotly_white")
+        st.plotly_chart(fig_savings_variance, width="stretch")
+
+        # -----------------------------
+        # ✅ ADD: RAW DATA — SAVINGS ONLY (at bottom)
+        # -----------------------------
+        with st.expander("Show Savings Raw Data"):
+            st.dataframe(
+                savings_df.sort_values(["Date", "Title"], ascending=[False, True]),
+                width="stretch"
+            )
+
+        # -----------------------------
+        # ✅ AI INSIGHTS (SAVINGS)
+        # -----------------------------
+        render_ai_insights(
+            df_filtered_local=df_filtered,
+            focus_df_local=savings_df,
+            selected_months_local=selected_months,
+            key_prefix="sav",
+            mode="savings"
+        )
