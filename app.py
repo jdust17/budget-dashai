@@ -164,6 +164,13 @@ def _safe_float(x):
     except:
         return 0.0
 
+# ✅ ADD: money-safe formatter for payload numbers (ints, no decimals)
+def _safe_money(x):
+    try:
+        return int(round(float(x)))
+    except:
+        return 0
+
 def build_insight_payload(
     df_filtered_local: pd.DataFrame,
     focus_df_local: pd.DataFrame,
@@ -184,9 +191,9 @@ def build_insight_payload(
         "mode": mode,
         "period_months": selected_months_local,
         "totals": {
-            "expected": _safe_float(expected_amt),
-            "actual": _safe_float(actual_amt),
-            "variance": _safe_float(variance_amt),
+            "expected": _safe_money(expected_amt),
+            "actual": _safe_money(actual_amt),
+            "variance": _safe_money(variance_amt),
         },
         "top_categories_actual": [],
         "biggest_over_budget": None,
@@ -205,7 +212,10 @@ def build_insight_payload(
         .sum()
         .sort_values("Amount", ascending=False)
     )
-    payload["top_categories_actual"] = by_cat_actual.head(5).to_dict(orient="records")
+    top5 = by_cat_actual.head(5).copy()
+    if "Amount" in top5.columns:
+        top5["Amount"] = top5["Amount"].apply(_safe_money)
+    payload["top_categories_actual"] = top5.to_dict(orient="records")
 
     # Biggest over/under vs Expected by Category (Actual - Expected)
     by_cat_pivot = (
@@ -222,16 +232,16 @@ def build_insight_payload(
     if len(over_sorted) > 0:
         payload["biggest_over_budget"] = {
             "Category": str(over_sorted.loc[0, "Category"]),
-            "delta": _safe_float(over_sorted.loc[0, "delta"]),
-            "Actual": _safe_float(over_sorted.loc[0, "Actual"]) if "Actual" in over_sorted.columns else 0,
-            "Expected": _safe_float(over_sorted.loc[0, "Expected"]) if "Expected" in over_sorted.columns else 0,
+            "delta": _safe_money(over_sorted.loc[0, "delta"]),
+            "Actual": _safe_money(over_sorted.loc[0, "Actual"]) if "Actual" in over_sorted.columns else 0,
+            "Expected": _safe_money(over_sorted.loc[0, "Expected"]) if "Expected" in over_sorted.columns else 0,
         }
     if len(under_sorted) > 0:
         payload["biggest_under_budget"] = {
             "Category": str(under_sorted.loc[0, "Category"]),
-            "delta": _safe_float(under_sorted.loc[0, "delta"]),
-            "Actual": _safe_float(under_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
-            "Expected": _safe_float(under_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
+            "delta": _safe_money(over_sorted.loc[0, "delta"]) if False else _safe_money(under_sorted.loc[0, "delta"]),
+            "Actual": _safe_money(under_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
+            "Expected": _safe_money(under_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
         }
 
     # Month-over-month: compare last two months in the selected range (Actual)
@@ -249,10 +259,10 @@ def build_insight_payload(
             last_two = monthly_actual.tail(2).reset_index(drop=True)
             mom = {
                 "prev_month": str(last_two.loc[0, "Month"]),
-                "prev_amount": _safe_float(last_two.loc[0, "Amount"]),
+                "prev_amount": _safe_money(last_two.loc[0, "Amount"]),
                 "last_month": str(last_two.loc[1, "Month"]),
-                "last_amount": _safe_float(last_two.loc[1, "Amount"]),
-                "change": _safe_float(last_two.loc[1, "Amount"]) - _safe_float(last_two.loc[0, "Amount"]),
+                "last_amount": _safe_money(last_two.loc[1, "Amount"]),
+                "change": _safe_money(_safe_float(last_two.loc[1, "Amount"]) - _safe_float(last_two.loc[0, "Amount"])),
             }
     payload["month_over_month"] = mom
 
@@ -264,8 +274,8 @@ def build_insight_payload(
         ]["Amount"].sum()
         money_left = income_actual_local - actual_amt
 
-        payload["totals"]["income_actual"] = _safe_float(income_actual_local)
-        payload["totals"]["money_left_to_spend"] = _safe_float(money_left)
+        payload["totals"]["income_actual"] = _safe_money(income_actual_local)
+        payload["totals"]["money_left_to_spend"] = _safe_money(money_left)
 
     return payload
 
@@ -296,7 +306,8 @@ def generate_ai_insights_cached(period_key: str, payload: dict) -> dict:
         "You are a helpful personal finance analyst. "
         "Use ONLY the numbers in the provided JSON payload. "
         "Write 2-3 insights and 1-2 concrete recommendations. "
-        "Be concise, specific, and do not mention the JSON or internal fields."
+        "Be concise, specific, and do not mention the JSON or internal fields. "
+        "FORMAT RULE: Every monetary amount must be formatted like $12,345 (no cents/decimals)."
     )
 
     user_msg = f"""
@@ -312,6 +323,7 @@ Rules:
 - Do NOT hallucinate or add numbers not present.
 - If month-over-month data is missing, skip MoM commentary.
 - Tone: friendly, practical, plain English.
+- IMPORTANT: Format ALL money as $X,XXX with commas and NO decimals. Do not write bare numbers.
 """
 
     model_name = "gpt-4.1-mini"
@@ -810,28 +822,4 @@ with tab_savings:
             savings_variance_df,
             x="Category",
             y="Variance",
-            color="Variance"
-        )
-
-        fig_savings_variance.update_layout(template="plotly_white")
-        st.plotly_chart(fig_savings_variance, width="stretch")
-
-        # -----------------------------
-        # ✅ ADD: RAW DATA — SAVINGS ONLY (at bottom)
-        # -----------------------------
-        with st.expander("Show Savings Raw Data"):
-            st.dataframe(
-                savings_df.sort_values(["Date", "Title"], ascending=[False, True]),
-                width="stretch"
-            )
-
-        # -----------------------------
-        # ✅ AI INSIGHTS (SAVINGS)
-        # -----------------------------
-        render_ai_insights(
-            df_filtered_local=df_filtered,
-            focus_df_local=savings_df,
-            selected_months_local=selected_months,
-            key_prefix="sav",
-            mode="savings"
-        )
+            color
