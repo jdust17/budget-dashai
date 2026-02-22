@@ -465,7 +465,15 @@ def render_ai_insights(
             st.error(result["error"])
         else:
             # ✅ APPLY POST-PROCESSOR so AI can't output bare money numbers
-            st.markdown(_format_money_in_ai_text(result["text"]))
+            formatted = _format_money_in_ai_text(result["text"])
+
+            # ✅ Prevent Streamlit Markdown from treating $...$ as LaTeX math
+            formatted = formatted.replace("$", r"\$")
+
+            # ✅ Extra normalization (sometimes the model returns NBSP again)
+            formatted = formatted.replace("\u00A0", " ")
+
+            st.markdown(formatted)
             st.caption(f"Model: {result.get('model', 'unknown')} | Cached per selected months for ~1 hour")
     else:
         if not can_run:
