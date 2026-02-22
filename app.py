@@ -171,6 +171,32 @@ def _safe_money(x):
     except:
         return 0
 
+# ✅ ADD: post-processor to force $ formatting in AI text output
+import re
+def _format_money_in_ai_text(text: str) -> str:
+    """
+    Post-process AI output so money-like integers show as $X,XXX (no decimals).
+    - Adds $ to standalone integers with 2+ digits (e.g. 90 -> $90, 7934 -> $7,934)
+    - Leaves values already prefixed with $ unchanged
+    - Skips year-like 4-digit numbers between 1900 and 2100 (to avoid $2026 etc.)
+    """
+    pattern = r"(?<![\w$])(-?\d{2,3}(?:,\d{3})+|-?\d{2,})(?![\w])"
+
+    def repl(m):
+        raw = m.group(1)
+        try:
+            n = int(raw.replace(",", ""))
+        except:
+            return raw
+
+        # Skip year-like numbers
+        if len(raw.replace(",", "").lstrip("-")) == 4 and 1900 <= abs(n) <= 2100:
+            return raw
+
+        return f"${n:,}"
+
+    return re.sub(pattern, repl, text)
+
 def build_insight_payload(
     df_filtered_local: pd.DataFrame,
     focus_df_local: pd.DataFrame,
@@ -240,8 +266,8 @@ def build_insight_payload(
         payload["biggest_under_budget"] = {
             "Category": str(under_sorted.loc[0, "Category"]),
             "delta": _safe_money(under_sorted.loc[0, "delta"]),
-            "Actual": _safe_money(under_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
-            "Expected": _safe_money(under_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
+            "Actual": _safe_money(over_sorted.loc[0, "Actual"]) if "Actual" in over_sorted.columns else 0,
+            "Expected": _safe_money(over_sorted.loc[0, "Expected"]) if "Expected" in over_sorted.columns else 0,
         }
 
     # Month-over-month: compare last two months in the selected range (Actual)
@@ -427,7 +453,8 @@ def render_ai_insights(
         if "error" in result:
             st.error(result["error"])
         else:
-            st.markdown(result["text"])
+            # ✅ APPLY POST-PROCESSOR so AI can't output bare money numbers
+            st.markdown(_format_money_in_ai_text(result["text"]))
             st.caption(f"Model: {result.get('model', 'unknown')} | Cached per selected months for ~1 hour")
     else:
         if not can_run:
