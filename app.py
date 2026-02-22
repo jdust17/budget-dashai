@@ -171,15 +171,31 @@ def _safe_money(x):
     except:
         return 0
 
-# ✅ ADD: post-processor to force $ formatting in AI text output
+# ✅ UPDATED: post-processor to force $ formatting in AI text output
 import re
 def _format_money_in_ai_text(text: str) -> str:
     """
     Post-process AI output so money-like integers show as $X,XXX (no decimals).
-    - Adds $ to standalone integers with 2+ digits (e.g. 90 -> $90, 7934 -> $7,934)
-    - Leaves values already prefixed with $ unchanged
-    - Skips year-like 4-digit numbers between 1900 and 2100 (to avoid $2026 etc.)
+
+    Step A) Normalize whitespace + fix glued words/numbers:
+      - converts non-breaking spaces to normal spaces
+      - inserts missing spaces between letters<->digits (e.g. "at7,934" -> "at 7,934")
+
+    Step B) Add $ to standalone integers with 2+ digits (commas preserved/added),
+    while leaving values already prefixed with $ unchanged.
+    Skips year-like 4-digit numbers between 1900 and 2100.
     """
+    if not text:
+        return text
+
+    # A1) normalize NBSP to normal space
+    text = text.replace("\u00A0", " ")
+
+    # A2) fix glued tokens: letter<->digit boundaries
+    text = re.sub(r"([A-Za-z])(\d)", r"\1 \2", text)
+    text = re.sub(r"(\d)([A-Za-z])", r"\1 \2", text)
+
+    # B) add $ formatting to numbers not already part of a word or already $-prefixed
     pattern = r"(?<![\w$])(-?\d{2,3}(?:,\d{3})+|-?\d{2,})(?![\w])"
 
     def repl(m):
@@ -189,8 +205,9 @@ def _format_money_in_ai_text(text: str) -> str:
         except:
             return raw
 
-        # Skip year-like numbers
-        if len(raw.replace(",", "").lstrip("-")) == 4 and 1900 <= abs(n) <= 2100:
+        # Skip year-like numbers (avoid $2026, etc.)
+        digits_only = raw.replace(",", "").lstrip("-")
+        if len(digits_only) == 4 and 1900 <= abs(n) <= 2100:
             return raw
 
         return f"${n:,}"
