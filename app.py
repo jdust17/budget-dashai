@@ -171,48 +171,42 @@ def _safe_money(x):
     except:
         return 0
 
-# ✅ UPDATED: post-processor to force $ formatting in AI text output
+# ✅ UPDATED (FIXED): post-processor to force $ formatting in AI text output
 import re
 def _format_money_in_ai_text(text: str) -> str:
     """
-    Post-process AI output so money-like integers show as $X,XXX (no decimals).
-
-    Step A) Normalize whitespace + fix glued words/numbers:
-      - converts non-breaking spaces to normal spaces
-      - inserts missing spaces between letters<->digits (e.g. "at7,934" -> "at 7,934")
-
-    Step B) Add $ to standalone integers with 2+ digits (commas preserved/added),
-    while leaving values already prefixed with $ unchanged.
-    Skips year-like 4-digit numbers between 1900 and 2100.
+    Post-process AI output so ALL money-like numbers render as $X,XXX
+    and spacing is restored between words and numbers.
     """
     if not text:
         return text
 
-    # A1) normalize NBSP to normal space
+    # Normalize non-breaking spaces
     text = text.replace("\u00A0", " ")
 
-    # A2) fix glued tokens: letter<->digit boundaries
+    # Fix glued words/numbers (e.g. "at7934" → "at 7934")
     text = re.sub(r"([A-Za-z])(\d)", r"\1 \2", text)
     text = re.sub(r"(\d)([A-Za-z])", r"\1 \2", text)
 
-    # B) add $ formatting to numbers not already part of a word or already $-prefixed
-    pattern = r"(?<![\w$])(-?\d{2,3}(?:,\d{3})+|-?\d{2,})(?![\w])"
+    # Match integers WITH or WITHOUT commas, 1+ digits
+    # but not already $-prefixed and not part of a word
+    money_pattern = r"(?<![\w$])(-?\d{1,3}(?:,\d{3})*|-?\d+)(?![\w])"
 
-    def repl(m):
-        raw = m.group(1)
+    def repl(match):
+        raw = match.group(1)
         try:
-            n = int(raw.replace(",", ""))
-        except:
+            value = int(raw.replace(",", ""))
+        except ValueError:
             return raw
 
-        # Skip year-like numbers (avoid $2026, etc.)
+        # Skip year-like values (prevents $2024, $2026, etc.)
         digits_only = raw.replace(",", "").lstrip("-")
-        if len(digits_only) == 4 and 1900 <= abs(n) <= 2100:
+        if len(digits_only) == 4 and 1900 <= abs(value) <= 2100:
             return raw
 
-        return f"${n:,}"
+        return f"${value:,}"
 
-    return re.sub(pattern, repl, text)
+    return re.sub(money_pattern, repl, text)
 
 def build_insight_payload(
     df_filtered_local: pd.DataFrame,
