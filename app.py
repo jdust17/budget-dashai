@@ -171,12 +171,13 @@ def _safe_money(x):
     except:
         return 0
 
-# ✅ UPDATED (FIXED): post-processor to force $ formatting in AI text output
 import re
+
 def _format_money_in_ai_text(text: str) -> str:
     """
-    Post-process AI output so ALL money-like numbers render as $X,XXX
-    and spacing is restored between words and numbers.
+    Post-process AI output for cleaner rendering WITHOUT corrupting percentages/counts.
+    - Fix glued words/numbers (at7934 -> at 7934)
+    - Normalize $ amounts to $X,XXX (no decimals) ONLY when already $-prefixed
     """
     if not text:
         return text
@@ -188,25 +189,20 @@ def _format_money_in_ai_text(text: str) -> str:
     text = re.sub(r"([A-Za-z])(\d)", r"\1 \2", text)
     text = re.sub(r"(\d)([A-Za-z])", r"\1 \2", text)
 
-    # Match integers WITH or WITHOUT commas, 1+ digits
-    # but not already $-prefixed and not part of a word
-    money_pattern = r"(?<![\w$])(-?\d{1,3}(?:,\d{3})*|-?\d+)(?![\w])"
-
-    def repl(match):
-        raw = match.group(1)
+    # Normalize existing $ amounts (avoid touching percentages like 48.4%)
+    # Matches $1234, $1,234, $1,234.56
+    def money_repl(m):
+        raw = m.group(0)  # includes $
+        num = raw.replace("$", "").replace(",", "")
         try:
-            value = int(raw.replace(",", ""))
-        except ValueError:
+            val = int(round(float(num)))
+        except:
             return raw
+        return f"${val:,}"
 
-        # Skip year-like values (prevents $2024, $2026, etc.)
-        digits_only = raw.replace(",", "").lstrip("-")
-        if len(digits_only) == 4 and 1900 <= abs(value) <= 2100:
-            return raw
+    text = re.sub(r"\$\s*\d[\d,]*(?:\.\d+)?", money_repl, text)
 
-        return f"${value:,}"
-
-    return re.sub(money_pattern, repl, text)
+    return text
 
 def _normalize_title(s: pd.Series) -> pd.Series:
     return (
@@ -254,7 +250,6 @@ def build_insight_payload(
             total_cells += len(work)
             missing_cells += work[c].isna().sum()
         else:
-            # missing entire column is very bad; treat as all missing
             total_cells += len(work)
             missing_cells += len(work)
     missing_pct = (missing_cells / total_cells) if total_cells else 1.0
@@ -336,7 +331,6 @@ def build_insight_payload(
     actual_rows = work[work["Type"] == "Actual"].copy()
     recurring = []
     if not actual_rows.empty:
-        # count occurrences and months count (if Date present)
         actual_rows["YearMonth"] = actual_rows["Date"].dt.to_period("M").astype(str)
         rec = (
             actual_rows
@@ -403,7 +397,6 @@ def build_insight_payload(
             med["cap_weekly_target"] = med["median_monthly"].apply(lambda x: _safe_money(x / 4.33))  # ~weeks/month
             budget_targets = med[["Category", "median_monthly", "trim_10pct_target", "cap_weekly_target"]].to_dict(orient="records")
 
-    # Extra context for expenses mode (income + "money left" style number)
     totals = {
         "expected": _safe_money(expected_amt),
         "actual": _safe_money(actual_amt),
@@ -435,9 +428,9 @@ def build_insight_payload(
         "biggest_over_budget": biggest_over_budget,
         "biggest_under_budget": biggest_under_budget,
         "month_over_month": mom,
-        "recurring_suspects": recurring,  # title-level patterns
-        "patterns": patterns,  # weekday / week-of-month totals
-        "budget_targets": budget_targets,  # median-based suggestions (numbers only; AI explains)
+        "recurring_suspects": recurring,
+        "patterns": patterns,
+        "budget_targets": budget_targets,
         "notes": [
             "Use ONLY numbers present in this payload.",
             "If confidence.missing_pct_required_fields is high or n_transactions is low, recommend data cleanup instead of strong advice.",
@@ -469,7 +462,6 @@ def generate_ai_insights_cached(period_key: str, payload: dict, focus_mode: str)
 
     client = OpenAI(api_key=str(api_key).strip())
 
-    # Focus-specific guidance (lightweight branching)
     focus_rules = {
         "Cut expenses": "Prioritize categories/titles to reduce; propose measurable caps.",
         "Reduce subscriptions": "Prioritize recurring_suspects; identify likely subscriptions and next steps to cancel/downgrade.",
@@ -606,36 +598,26 @@ def render_ai_insights(
         c3.metric("Over/Under (EvA)", f"${variance:,.0f}", f"{variance_pct:.1f}%")
         c4.metric("Transactions", f"{payload['confidence']['n_transactions']:,}")
 
-    # Top 3 categories with share
+    # ✅ FIX: Top 3 categories formatting ($ and %)
     top3 = payload.get("top3_categories_actual", [])
     if top3:
         top3_df = pd.DataFrame(top3)[["Category", "Amount", "share_of_total_actual"]].copy()
-        top3_df.rename(columns={"share_of_total_actual": "% of total (Actual)"}, inplace=True)
+        top3_df["Amount"] = top3_df["Amount"].apply(lambda x: f"${int(x):,}")
+        top3_df["% of total (Actual)"] = top3_df["share_of_total_actual"].apply(lambda x: f"{float(x):.1f}%")
+        top3_df = top3_df.drop(columns=["share_of_total_actual"])
         st.dataframe(top3_df, width="stretch", hide_index=True)
     else:
         st.info("Top categories: insufficient data for this selection.")
 
-    # Most frequent titles + largest single transaction (Actual)
+    # ✅ CHANGE: remove "Most frequent Titles" section completely, keep largest single transaction only
     actual_only = focus_df_local[focus_df_local["Type"].astype(str).str.strip().eq("Actual")].copy()
     if not actual_only.empty:
-        actual_only["Title_norm"] = _normalize_title(actual_only["Title"])
-        freq = (
-            actual_only.groupby(["Title_norm"], as_index=False)
-            .agg(Title=("Title", "first"), Count=("Title_norm", "size"))
-            .sort_values("Count", ascending=False)
-            .head(3)
-        )
-        left, right = st.columns(2)
-        with left:
-            st.markdown("**Most frequent Titles (Actual):**")
-            st.dataframe(freq[["Title", "Count"]], width="stretch", hide_index=True)
-        with right:
-            st.markdown("**Largest single transaction (Actual):**")
-            idx = actual_only["Amount"].astype(float).idxmax()
-            row = actual_only.loc[idx]
-            dt = pd.to_datetime(row["Date"], errors="coerce")
-            dt_str = dt.strftime("%Y-%m-%d") if pd.notna(dt) else "Unknown"
-            st.write(f"- {row.get('Title','(Unknown)')} — ${float(row.get('Amount',0)):,.0f} on {dt_str}")
+        st.markdown("**Largest single transaction (Actual):**")
+        idx = actual_only["Amount"].astype(float).idxmax()
+        row = actual_only.loc[idx]
+        dt = pd.to_datetime(row["Date"], errors="coerce")
+        dt_str = dt.strftime("%Y-%m-%d") if pd.notna(dt) else "Unknown"
+        st.write(f"- {row.get('Title','(Unknown)')} — ${float(row.get('Amount',0)):,.0f} on {dt_str}")
     else:
         st.info("Transaction snapshot: insufficient Actual rows for this selection.")
 
@@ -671,7 +653,6 @@ def render_ai_insights(
         if "error" in result:
             st.error(result["error"])
         else:
-            # ✅ APPLY POST-PROCESSOR so AI can't output bare money numbers
             formatted = _format_money_in_ai_text(result["text"])
 
             # ✅ Prevent Streamlit Markdown from treating $...$ as LaTeX math
@@ -683,11 +664,10 @@ def render_ai_insights(
             st.markdown(formatted)
             st.caption(f"Model: {result.get('model', 'unknown')} | Cached per selected months+focus for ~1 hour")
 
-            # ✅ ADD: Drill-down buttons (no LLM needed)
+            # ✅ Drill-down buttons (no LLM needed)
             st.markdown("**Drill-down (local):**")
             d1, d2, d3 = st.columns(3)
 
-            # Compute helpers for drill-down
             top_driver_cat = None
             if payload.get("top_categories_actual"):
                 top_driver_cat = payload["top_categories_actual"][0].get("Category")
