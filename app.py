@@ -208,55 +208,83 @@ def _format_money_in_ai_text(text: str) -> str:
 
     return re.sub(money_pattern, repl, text)
 
+def _normalize_title(s: pd.Series) -> pd.Series:
+    return (
+        s.astype(str)
+        .str.lower()
+        .str.replace(r"[^a-z0-9 ]", "", regex=True)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+
+def _pct(numer: float, denom: float) -> float:
+    if denom is None or denom == 0:
+        return 0.0
+    return float(numer) / float(denom)
+
 def build_insight_payload(
     df_filtered_local: pd.DataFrame,
     focus_df_local: pd.DataFrame,
     selected_months_local: list,
-    mode: str
+    mode: str,
+    focus_mode: str
 ) -> dict:
     """
     Compute a compact, privacy-safe summary of the selected period.
     No raw transaction dumps; only aggregated facts.
     mode: "expenses" or "savings"
+    focus_mode: user-selected "Focus" option for insights
     """
+    # Ensure we can compute time features without mutating original
+    work = focus_df_local.copy()
+    if "Date" in work.columns:
+        work["Date"] = pd.to_datetime(work["Date"], errors="coerce")
+
     # Totals (Expected/Actual) for whichever table we're analyzing
-    expected_amt = focus_df_local[focus_df_local["Type"] == "Expected"]["Amount"].sum()
-    actual_amt = focus_df_local[focus_df_local["Type"] == "Actual"]["Amount"].sum()
+    expected_amt = work[work["Type"] == "Expected"]["Amount"].sum()
+    actual_amt = work[work["Type"] == "Actual"]["Amount"].sum()
     variance_amt = actual_amt - expected_amt
 
-    payload = {
-        "mode": mode,
-        "period_months": selected_months_local,
-        "totals": {
-            "expected": _safe_money(expected_amt),
-            "actual": _safe_money(actual_amt),
-            "variance": _safe_money(variance_amt),
-        },
-        "top_categories_actual": [],
-        "biggest_over_budget": None,
-        "biggest_under_budget": None,
-        "month_over_month": None,
-        "notes": [
-            "Insights should be based only on provided aggregates.",
-            "Do not invent numbers. If something is missing, say so.",
-        ],
-    }
+    # Data quality/confidence
+    required = ["Date", "Title", "Category", "Type", "Amount"]
+    missing_cells = 0
+    total_cells = 0
+    for c in required:
+        if c in work.columns:
+            total_cells += len(work)
+            missing_cells += work[c].isna().sum()
+        else:
+            # missing entire column is very bad; treat as all missing
+            total_cells += len(work)
+            missing_cells += len(work)
+    missing_pct = (missing_cells / total_cells) if total_cells else 1.0
 
-    # Top drivers (Actual) - by Category
+    n_txns = int(len(work))
+    n_months_selected = int(len([m for m in selected_months_local if m]))
+
+    # Title normalization for recurring + drilldowns
+    work["Title_norm"] = _normalize_title(work["Title"])
+
+    # Top categories (Actual) + share of total
     by_cat_actual = (
-        focus_df_local[focus_df_local["Type"] == "Actual"]
+        work[work["Type"] == "Actual"]
         .groupby("Category", as_index=False)["Amount"]
         .sum()
         .sort_values("Amount", ascending=False)
     )
-    top5 = by_cat_actual.head(5).copy()
-    if "Amount" in top5.columns:
-        top5["Amount"] = top5["Amount"].apply(_safe_money)
-    payload["top_categories_actual"] = top5.to_dict(orient="records")
+    total_actual_for_share = float(by_cat_actual["Amount"].sum()) if not by_cat_actual.empty else 0.0
+    top3_cat = by_cat_actual.head(3).copy()
+    if not top3_cat.empty:
+        top3_cat["Amount"] = top3_cat["Amount"].apply(_safe_money)
+        top3_cat["share_of_total_actual"] = top3_cat["Amount"].apply(lambda x: round(_pct(x, total_actual_for_share) * 100, 1))
+    top10_cat = by_cat_actual.head(10).copy()
+    if not top10_cat.empty:
+        top10_cat["Amount"] = top10_cat["Amount"].apply(_safe_money)
+        top10_cat["share_of_total_actual"] = top10_cat["Amount"].apply(lambda x: round(_pct(x, total_actual_for_share) * 100, 1))
 
     # Biggest over/under vs Expected by Category (Actual - Expected)
     by_cat_pivot = (
-        focus_df_local
+        work
         .groupby(["Category", "Type"], as_index=False)["Amount"]
         .sum()
         .pivot(index="Category", columns="Type", values="Amount")
@@ -266,26 +294,28 @@ def build_insight_payload(
     over_sorted = by_cat_pivot.sort_values("delta", ascending=False).reset_index()
     under_sorted = by_cat_pivot.sort_values("delta", ascending=True).reset_index()
 
+    biggest_over_budget = None
+    biggest_under_budget = None
     if len(over_sorted) > 0:
-        payload["biggest_over_budget"] = {
+        biggest_over_budget = {
             "Category": str(over_sorted.loc[0, "Category"]),
             "delta": _safe_money(over_sorted.loc[0, "delta"]),
             "Actual": _safe_money(over_sorted.loc[0, "Actual"]) if "Actual" in over_sorted.columns else 0,
             "Expected": _safe_money(over_sorted.loc[0, "Expected"]) if "Expected" in over_sorted.columns else 0,
         }
     if len(under_sorted) > 0:
-        payload["biggest_under_budget"] = {
+        biggest_under_budget = {
             "Category": str(under_sorted.loc[0, "Category"]),
             "delta": _safe_money(under_sorted.loc[0, "delta"]),
-            "Actual": _safe_money(over_sorted.loc[0, "Actual"]) if "Actual" in over_sorted.columns else 0,
-            "Expected": _safe_money(over_sorted.loc[0, "Expected"]) if "Expected" in over_sorted.columns else 0,
+            "Actual": _safe_money(under_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
+            "Expected": _safe_money(under_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
         }
 
     # Month-over-month: compare last two months in the selected range (Actual)
     mom = None
-    if focus_df_local["Month"].notna().any():
+    if work["Month"].notna().any():
         monthly_actual = (
-            focus_df_local[focus_df_local["Type"] == "Actual"]
+            work[work["Type"] == "Actual"]
             .groupby("Month", as_index=False)["Amount"]
             .sum()
         )
@@ -301,23 +331,123 @@ def build_insight_payload(
                 "last_amount": _safe_money(last_two.loc[1, "Amount"]),
                 "change": _safe_money(_safe_float(last_two.loc[1, "Amount"]) - _safe_float(last_two.loc[0, "Amount"])),
             }
-    payload["month_over_month"] = mom
+
+    # Recurring suspects (Title-based patterns, Actual only)
+    actual_rows = work[work["Type"] == "Actual"].copy()
+    recurring = []
+    if not actual_rows.empty:
+        # count occurrences and months count (if Date present)
+        actual_rows["YearMonth"] = actual_rows["Date"].dt.to_period("M").astype(str)
+        rec = (
+            actual_rows
+            .groupby(["Title_norm"], as_index=False)
+            .agg(
+                Title=("Title", "first"),
+                count=("Title_norm", "size"),
+                months=("YearMonth", pd.Series.nunique),
+                avg_amount=("Amount", "mean"),
+                total_amount=("Amount", "sum")
+            )
+            .sort_values(["months", "total_amount"], ascending=[False, False])
+        )
+        rec = rec[(rec["count"] >= 2) | (rec["months"] >= 2)].head(10).copy()
+        if not rec.empty:
+            rec["avg_amount"] = rec["avg_amount"].apply(_safe_money)
+            rec["total_amount"] = rec["total_amount"].apply(_safe_money)
+            recurring = rec[["Title", "count", "months", "avg_amount", "total_amount"]].to_dict(orient="records")
+
+    # Weekday + week-of-month spikes (Actual only)
+    patterns = {"weekday_spend": [], "week_of_month_spend": []}
+    if not actual_rows.empty and actual_rows["Date"].notna().any():
+        actual_rows["Weekday"] = actual_rows["Date"].dt.day_name()
+        wd = (
+            actual_rows
+            .groupby("Weekday", as_index=False)["Amount"]
+            .sum()
+            .sort_values("Amount", ascending=False)
+        )
+        if not wd.empty:
+            wd["Amount"] = wd["Amount"].apply(_safe_money)
+            patterns["weekday_spend"] = wd.head(7).to_dict(orient="records")
+
+        actual_rows["WeekOfMonth"] = ((actual_rows["Date"].dt.day.fillna(1) - 1) // 7 + 1).astype(int)
+        wom = (
+            actual_rows
+            .groupby("WeekOfMonth", as_index=False)["Amount"]
+            .sum()
+            .sort_values("Amount", ascending=False)
+        )
+        if not wom.empty:
+            wom["Amount"] = wom["Amount"].apply(_safe_money)
+            patterns["week_of_month_spend"] = wom.head(4).to_dict(orient="records")
+
+    # Personalized budgeting: median by category across months (Actual)
+    budget_targets = []
+    if not actual_rows.empty:
+        monthly_by_cat = (
+            actual_rows
+            .groupby(["Category", "YearMonth"], as_index=False)["Amount"]
+            .sum()
+        )
+        med = (
+            monthly_by_cat
+            .groupby("Category", as_index=False)["Amount"]
+            .median()
+            .sort_values("Amount", ascending=False)
+            .head(10)
+            .copy()
+        )
+        if not med.empty:
+            med["median_monthly"] = med["Amount"].apply(_safe_money)
+            med["trim_10pct_target"] = med["median_monthly"].apply(lambda x: _safe_money(x * 0.9))
+            med["cap_weekly_target"] = med["median_monthly"].apply(lambda x: _safe_money(x / 4.33))  # ~weeks/month
+            budget_targets = med[["Category", "median_monthly", "trim_10pct_target", "cap_weekly_target"]].to_dict(orient="records")
 
     # Extra context for expenses mode (income + "money left" style number)
+    totals = {
+        "expected": _safe_money(expected_amt),
+        "actual": _safe_money(actual_amt),
+        "variance": _safe_money(variance_amt),
+        "variance_pct_of_expected": round(_pct(variance_amt, expected_amt) * 100, 1) if expected_amt else 0.0,
+    }
+
     if mode == "expenses":
         income_actual_local = df_filtered_local[
             (df_filtered_local["Category"] == "Income") &
             (df_filtered_local["Type"] == "Actual")
         ]["Amount"].sum()
         money_left = income_actual_local - actual_amt
+        totals["income_actual"] = _safe_money(income_actual_local)
+        totals["money_left_to_spend"] = _safe_money(money_left)
 
-        payload["totals"]["income_actual"] = _safe_money(income_actual_local)
-        payload["totals"]["money_left_to_spend"] = _safe_money(money_left)
+    payload = {
+        "mode": mode,
+        "focus_mode": focus_mode,
+        "period_months": selected_months_local,
+        "confidence": {
+            "n_transactions": n_txns,
+            "n_months_selected": n_months_selected,
+            "missing_pct_required_fields": round(missing_pct * 100, 1),
+        },
+        "totals": totals,
+        "top_categories_actual": top10_cat.to_dict(orient="records") if not top10_cat.empty else [],
+        "top3_categories_actual": top3_cat.to_dict(orient="records") if not top3_cat.empty else [],
+        "biggest_over_budget": biggest_over_budget,
+        "biggest_under_budget": biggest_under_budget,
+        "month_over_month": mom,
+        "recurring_suspects": recurring,  # title-level patterns
+        "patterns": patterns,  # weekday / week-of-month totals
+        "budget_targets": budget_targets,  # median-based suggestions (numbers only; AI explains)
+        "notes": [
+            "Use ONLY numbers present in this payload.",
+            "If confidence.missing_pct_required_fields is high or n_transactions is low, recommend data cleanup instead of strong advice.",
+        ],
+    }
 
     return payload
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def generate_ai_insights_cached(period_key: str, payload: dict) -> dict:
+def generate_ai_insights_cached(period_key: str, payload: dict, focus_mode: str) -> dict:
     """
     Cache AI output by period_key for 1 hour to avoid repeated calls.
     Never crashes the app if auth/billing/model access fails.
@@ -339,30 +469,48 @@ def generate_ai_insights_cached(period_key: str, payload: dict) -> dict:
 
     client = OpenAI(api_key=str(api_key).strip())
 
-    # ✅ UPDATED: add formatting rule
+    # Focus-specific guidance (lightweight branching)
+    focus_rules = {
+        "Cut expenses": "Prioritize categories/titles to reduce; propose measurable caps.",
+        "Reduce subscriptions": "Prioritize recurring_suspects; identify likely subscriptions and next steps to cancel/downgrade.",
+        "Increase savings": "Highlight levers to move money into savings; suggest transfer targets.",
+        "Fix budget accuracy": "Focus on Expected vs Actual gaps; suggest which categories need updated expected values.",
+        "Find anomalies": "Flag spikes/outliers and unusual weekday/week-of-month patterns; suggest checks for one-offs or duplicates.",
+    }
+    focus_hint = focus_rules.get(focus_mode, focus_rules["Cut expenses"])
+
     system_msg = (
         "You are a helpful personal finance analyst. "
-        "Use ONLY the numbers in the provided JSON payload. "
-        "Write 2-3 insights and 1-2 concrete recommendations. "
-        "Be concise, specific, and do not mention the JSON or internal fields. "
-        "FORMAT RULE: Any money amount must be written like $12,345 (no decimals)."
+        "Use ONLY the numbers in the provided payload. "
+        "Never invent numbers. Never mention JSON, payload, or internal fields. "
+        "Output MUST be bullet points only (no paragraphs). "
+        "Every bullet MUST include at least one number from the payload. "
+        "If you cannot cite numbers for a claim, say 'Insufficient data' and move on. "
+        "No moralizing language. Keep it friendly and practical. "
+        "FORMAT RULE: Any money amount must be written like $12,345 (no decimals). "
+        "Percentages must be like 12.3% (1 decimal ok)."
     )
 
-    # ✅ UPDATED: reinforce formatting rule
     user_msg = f"""
-Here is an aggregated summary of finances for a selected period (JSON):
+Focus mode: {focus_mode}
+Goal: {focus_hint}
+
+Here are aggregated finances for a selected period:
 
 {payload}
 
-Write:
-- Insights (2-3 bullet points)
-- Recommendations (1-2 bullet points)
+Required output format (bullets only):
+- Headline: one sentence like "You were over plan by $X mainly due to Y."
+- Top drivers: 3 bullets, each includes category name + $ amount + % of total actual.
+- Why it happened: 2 bullets using patterns (recurring_suspects and weekday/week_of_month) if available.
+- Do this next: 1–3 bullets with measurable targets (e.g., "$30/week", "cut by $120 next month", "cancel X saving $Y/month").
+- Confidence: 1 bullet that references n_transactions, n_months_selected, and missing_pct_required_fields, plus a caveat if low.
 
 Rules:
-- Do NOT hallucinate or add numbers not present.
-- If month-over-month data is missing, skip MoM commentary.
-- Tone: friendly, practical, plain English.
-- IMPORTANT: Format all money as $X,XXX with commas and NO decimals. Do not write bare numbers.
+- Use only payload numbers.
+- If recurring_suspects is empty, say "Insufficient data" for subscription/recurring commentary.
+- If weekday/week_of_month patterns are empty, say "Insufficient data" for pattern commentary.
+- Do NOT output bare numbers: include $ for money and % for percentages.
 """
 
     model_name = "gpt-4.1-mini"
@@ -401,41 +549,100 @@ def render_ai_insights(
     st.divider()
     st.subheader("🧠 Insights & Recommendations")
 
-    # Build a stable "period key" for caching (based on selected months + mode)
-    period_key = f"{mode}|" + ",".join(selected_months_local)
-
-    with st.expander("How this works", expanded=False):
-        st.write(
-            "This section is hybrid: the app computes the facts locally (totals, deltas, top drivers), "
-            "then AI turns those facts into plain-English insights. No raw transactions are sent."
-        )
-
     if focus_df_local is None or focus_df_local.empty:
         st.info("No data available for the selected filters. Adjust filters to generate insights.")
         return
+
+    # ✅ ADD: Insight mode selector (lightweight, per tab + mode)
+    focus_options = ["Cut expenses", "Reduce subscriptions", "Increase savings", "Fix budget accuracy", "Find anomalies"]
+    focus_key = f"{key_prefix}_ai_focus_{mode}"
+    if focus_key not in st.session_state:
+        st.session_state[focus_key] = "Cut expenses"
+
+    with st.expander("How this works", expanded=False):
+        st.write(
+            "This section is hybrid: the app computes the facts locally (totals, deltas, top drivers, patterns), "
+            "then AI turns those facts into plain-English insights. No raw transactions are sent."
+        )
+        st.session_state[focus_key] = st.selectbox(
+            "Focus",
+            options=focus_options,
+            index=focus_options.index(st.session_state[focus_key]) if st.session_state[focus_key] in focus_options else 0,
+            key=f"{focus_key}_selectbox"
+        )
+
+    focus_mode = st.session_state[focus_key]
 
     payload = build_insight_payload(
         df_filtered_local=df_filtered_local,
         focus_df_local=focus_df_local,
         selected_months_local=selected_months_local,
-        mode=mode
+        mode=mode,
+        focus_mode=focus_mode
     )
 
-    # Show a quick local, non-AI fallback (always available)
-    st.markdown("**Quick Stats (local):**")
+    # ✅ ADD: "Insight Snapshot" (always renders, even if AI fails)
+    st.markdown("**Insight Snapshot (local):**")
+
+    total_expected = payload["totals"]["expected"]
+    total_actual = payload["totals"]["actual"]
+    variance = payload["totals"]["variance"]
+    variance_pct = payload["totals"].get("variance_pct_of_expected", 0.0)
+
     if mode == "expenses":
-        col_a, col_b, col_c, col_d = st.columns(4)
-        col_a.metric("Expected", f"${payload['totals']['expected']:,.0f}")
-        col_b.metric("Actual", f"${payload['totals']['actual']:,.0f}")
-        col_c.metric("Income (Actual)", f"${payload['totals'].get('income_actual', 0):,.0f}")
-        col_d.metric("Money Left", f"${payload['totals'].get('money_left_to_spend', 0):,.0f}")
+        income_actual = payload["totals"].get("income_actual", 0)
+        money_left = payload["totals"].get("money_left_to_spend", 0)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Expected", f"${total_expected:,.0f}")
+        c2.metric("Actual", f"${total_actual:,.0f}")
+        c3.metric("Over/Under (EvA)", f"${variance:,.0f}", f"{variance_pct:.1f}%")
+        c4.metric("Money Left", f"${money_left:,.0f}")
+        st.caption(f"Income (Actual): ${income_actual:,.0f}")
     else:
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Expected", f"${payload['totals']['expected']:,.0f}")
-        col_b.metric("Actual", f"${payload['totals']['actual']:,.0f}")
-        col_c.metric("EvA", f"${payload['totals']['variance']:,.0f}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Expected", f"${total_expected:,.0f}")
+        c2.metric("Actual", f"${total_actual:,.0f}")
+        c3.metric("Over/Under (EvA)", f"${variance:,.0f}", f"{variance_pct:.1f}%")
+        c4.metric("Transactions", f"{payload['confidence']['n_transactions']:,}")
+
+    # Top 3 categories with share
+    top3 = payload.get("top3_categories_actual", [])
+    if top3:
+        top3_df = pd.DataFrame(top3)[["Category", "Amount", "share_of_total_actual"]].copy()
+        top3_df.rename(columns={"share_of_total_actual": "% of total (Actual)"}, inplace=True)
+        st.dataframe(top3_df, width="stretch", hide_index=True)
+    else:
+        st.info("Top categories: insufficient data for this selection.")
+
+    # Most frequent titles + largest single transaction (Actual)
+    actual_only = focus_df_local[focus_df_local["Type"].astype(str).str.strip().eq("Actual")].copy()
+    if not actual_only.empty:
+        actual_only["Title_norm"] = _normalize_title(actual_only["Title"])
+        freq = (
+            actual_only.groupby(["Title_norm"], as_index=False)
+            .agg(Title=("Title", "first"), Count=("Title_norm", "size"))
+            .sort_values("Count", ascending=False)
+            .head(3)
+        )
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Most frequent Titles (Actual):**")
+            st.dataframe(freq[["Title", "Count"]], width="stretch", hide_index=True)
+        with right:
+            st.markdown("**Largest single transaction (Actual):**")
+            idx = actual_only["Amount"].astype(float).idxmax()
+            row = actual_only.loc[idx]
+            dt = pd.to_datetime(row["Date"], errors="coerce")
+            dt_str = dt.strftime("%Y-%m-%d") if pd.notna(dt) else "Unknown"
+            st.write(f"- {row.get('Title','(Unknown)')} — ${float(row.get('Amount',0)):,.0f} on {dt_str}")
+    else:
+        st.info("Transaction snapshot: insufficient Actual rows for this selection.")
 
     import time
+
+    # Build a stable "period key" for caching (based on months + mode + focus)
+    period_key = f"{mode}|{focus_mode}|" + ",".join(selected_months_local)
 
     # Simple cooldown to prevent rapid re-clicks / reruns from spamming API (per tab + mode)
     ts_key = f"{key_prefix}_ai_last_run_ts_{mode}"
@@ -451,7 +658,7 @@ def render_ai_insights(
         with st.spinner("Generating insights..."):
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
-                result = generate_ai_insights_cached(period_key=period_key, payload=payload)
+                result = generate_ai_insights_cached(period_key=period_key, payload=payload, focus_mode=focus_mode)
 
                 if isinstance(result, dict) and "error" in result and "Rate limited" in result["error"]:
                     if attempt < max_attempts:
@@ -474,7 +681,53 @@ def render_ai_insights(
             formatted = formatted.replace("\u00A0", " ")
 
             st.markdown(formatted)
-            st.caption(f"Model: {result.get('model', 'unknown')} | Cached per selected months for ~1 hour")
+            st.caption(f"Model: {result.get('model', 'unknown')} | Cached per selected months+focus for ~1 hour")
+
+            # ✅ ADD: Drill-down buttons (no LLM needed)
+            st.markdown("**Drill-down (local):**")
+            d1, d2, d3 = st.columns(3)
+
+            # Compute helpers for drill-down
+            top_driver_cat = None
+            if payload.get("top_categories_actual"):
+                top_driver_cat = payload["top_categories_actual"][0].get("Category")
+
+            with d1:
+                if st.button("Show top driver transactions", key=f"{key_prefix}_drill_topdriver_{mode}"):
+                    if top_driver_cat:
+                        tx = focus_df_local[
+                            (focus_df_local["Type"].astype(str).str.strip().eq("Actual")) &
+                            (focus_df_local["Category"].astype(str).str.strip().eq(str(top_driver_cat)))
+                        ].copy()
+                        st.dataframe(
+                            tx.sort_values(["Date", "Amount"], ascending=[False, False]),
+                            width="stretch"
+                        )
+                    else:
+                        st.info("Insufficient data to identify a top driver.")
+
+            with d2:
+                if st.button("Show recurring suspects", key=f"{key_prefix}_drill_recurring_{mode}"):
+                    rec = payload.get("recurring_suspects", [])
+                    if rec:
+                        st.dataframe(pd.DataFrame(rec), width="stretch", hide_index=True)
+                    else:
+                        st.info("Insufficient data to compute recurring suspects for this selection.")
+
+            with d3:
+                if st.button("Highlight recurring items", key=f"{key_prefix}_drill_highlight_{mode}"):
+                    tx = focus_df_local[focus_df_local["Type"].astype(str).str.strip().eq("Actual")].copy()
+                    if tx.empty:
+                        st.info("No Actual transactions available for this selection.")
+                    else:
+                        tx["Title_norm"] = _normalize_title(tx["Title"])
+                        counts = tx.groupby("Title_norm")["Title_norm"].transform("size")
+                        tx["Recurring?"] = counts >= 2
+                        st.dataframe(
+                            tx.sort_values(["Recurring?", "Date", "Amount"], ascending=[False, False, False]),
+                            width="stretch"
+                        )
+
     else:
         if not can_run:
             remaining = int(COOLDOWN_SECONDS - (time.time() - st.session_state[ts_key]))
