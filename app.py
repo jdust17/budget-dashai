@@ -171,12 +171,13 @@ def _safe_money(x):
     except:
         return 0
 
-# ✅ UPDATED (FIXED): post-processor to force $ formatting in AI text output
 import re
+
 def _format_money_in_ai_text(text: str) -> str:
     """
-    Post-process AI output so money-like integers render as $X,XXX
-    without breaking decimals or percentages.
+    Post-process AI output for cleaner rendering WITHOUT corrupting percentages/counts.
+    - Fix glued words/numbers (at7934 -> at 7934)
+    - Normalize $ amounts to $X,XXX (no decimals) ONLY when already $-prefixed
     """
     if not text:
         return text
@@ -188,27 +189,20 @@ def _format_money_in_ai_text(text: str) -> str:
     text = re.sub(r"([A-Za-z])(\d)", r"\1 \2", text)
     text = re.sub(r"(\d)([A-Za-z])", r"\1 \2", text)
 
-    # Match integer-ish numbers, but NOT:
-    # - already $-prefixed
-    # - part of a decimal (48.4)
-    # - percentages (48% or 48.4%)
-    money_pattern = r"(?<![\w$\.])(-?\d{1,3}(?:,\d{3})*|-?\d+)(?![\w\.%])"
-
-    def repl(match):
-        raw = match.group(1)
+    # Normalize existing $ amounts (avoid touching percentages like 48.4%)
+    # Matches $1234, $1,234, $1,234.56
+    def money_repl(m):
+        raw = m.group(0)  # includes $
+        num = raw.replace("$", "").replace(",", "")
         try:
-            value = int(raw.replace(",", ""))
-        except ValueError:
+            val = int(round(float(num)))
+        except:
             return raw
+        return f"${val:,}"
 
-        # Skip year-like values (prevents $2024, $2026, etc.)
-        digits_only = raw.replace(",", "").lstrip("-")
-        if len(digits_only) == 4 and 1900 <= abs(value) <= 2100:
-            return raw
+    text = re.sub(r"\$\s*\d[\d,]*(?:\.\d+)?", money_repl, text)
 
-        return f"${value:,}"
-
-    return re.sub(money_pattern, repl, text)
+    return text
 
 def _normalize_title(s: pd.Series) -> pd.Series:
     return (
@@ -551,6 +545,7 @@ def render_ai_insights(
         st.info("No data available for the selected filters. Adjust filters to generate insights.")
         return
 
+    # ✅ ADD: Insight mode selector (lightweight, per tab + mode)
     focus_options = ["Cut expenses", "Reduce subscriptions", "Increase savings", "Fix budget accuracy", "Find anomalies"]
     focus_key = f"{key_prefix}_ai_focus_{mode}"
     if focus_key not in st.session_state:
@@ -578,7 +573,7 @@ def render_ai_insights(
         focus_mode=focus_mode
     )
 
-    # ✅ "Insight Snapshot" (always renders, even if AI fails)
+    # ✅ ADD: "Insight Snapshot" (always renders, even if AI fails)
     st.markdown("**Insight Snapshot (local):**")
 
     total_expected = payload["totals"]["expected"]
@@ -603,18 +598,18 @@ def render_ai_insights(
         c3.metric("Over/Under (EvA)", f"${variance:,.0f}", f"{variance_pct:.1f}%")
         c4.metric("Transactions", f"{payload['confidence']['n_transactions']:,}")
 
-    # ✅ Top 3 categories: ensure $ + % are shown in the table
+    # ✅ FIX: Top 3 categories formatting ($ and %)
     top3 = payload.get("top3_categories_actual", [])
     if top3:
         top3_df = pd.DataFrame(top3)[["Category", "Amount", "share_of_total_actual"]].copy()
         top3_df["Amount"] = top3_df["Amount"].apply(lambda x: f"${int(x):,}")
-        top3_df["share_of_total_actual"] = top3_df["share_of_total_actual"].apply(lambda x: f"{float(x):.1f}%")
-        top3_df.rename(columns={"share_of_total_actual": "% of total (Actual)"}, inplace=True)
+        top3_df["% of total (Actual)"] = top3_df["share_of_total_actual"].apply(lambda x: f"{float(x):.1f}%")
+        top3_df = top3_df.drop(columns=["share_of_total_actual"])
         st.dataframe(top3_df, width="stretch", hide_index=True)
     else:
         st.info("Top categories: insufficient data for this selection.")
 
-    # ✅ Keep only largest single transaction (remove "Most frequent Titles")
+    # ✅ CHANGE: remove "Most frequent Titles" section completely, keep largest single transaction only
     actual_only = focus_df_local[focus_df_local["Type"].astype(str).str.strip().eq("Actual")].copy()
     if not actual_only.empty:
         st.markdown("**Largest single transaction (Actual):**")
@@ -628,8 +623,10 @@ def render_ai_insights(
 
     import time
 
+    # Build a stable "period key" for caching (based on months + mode + focus)
     period_key = f"{mode}|{focus_mode}|" + ",".join(selected_months_local)
 
+    # Simple cooldown to prevent rapid re-clicks / reruns from spamming API (per tab + mode)
     ts_key = f"{key_prefix}_ai_last_run_ts_{mode}"
     if ts_key not in st.session_state:
         st.session_state[ts_key] = 0.0
@@ -658,14 +655,16 @@ def render_ai_insights(
         else:
             formatted = _format_money_in_ai_text(result["text"])
 
-            # Prevent Streamlit Markdown from treating $...$ as LaTeX math
+            # ✅ Prevent Streamlit Markdown from treating $...$ as LaTeX math
             formatted = formatted.replace("$", r"\$")
 
+            # ✅ Extra normalization (sometimes the model returns NBSP again)
             formatted = formatted.replace("\u00A0", " ")
 
             st.markdown(formatted)
             st.caption(f"Model: {result.get('model', 'unknown')} | Cached per selected months+focus for ~1 hour")
 
+            # ✅ Drill-down buttons (no LLM needed)
             st.markdown("**Drill-down (local):**")
             d1, d2, d3 = st.columns(3)
 
@@ -717,22 +716,28 @@ def render_ai_insights(
             st.info("Click **Generate insights with AI** to create personalized insights for the selected period.")
 
 with tab_dashboard:
+    # ✅ Filters only for Dashboard tab
     df_filtered = apply_tab_filters(df, "dash")
     selected_months = st.session_state.get("dash_selected_months", MONTH_ORDER)
 
     expense_df = df_filtered[~df_filtered["Category"].isin(EXCLUDED_CATEGORIES)]
 
+    # -----------------------------
+    # KEY METRICS — EXPENSES ONLY
+    # -----------------------------
     st.subheader("📊 Key Metrics")
 
     expected_expenses = expense_df[expense_df["Type"] == "Expected"]["Amount"].sum()
     actual_expenses = expense_df[expense_df["Type"] == "Actual"]["Amount"].sum()
     variance_expenses = actual_expenses - expected_expenses
 
+    # Income Actual
     income_actual = df_filtered[
         (df_filtered["Category"] == "Income") &
         (df_filtered["Type"] == "Actual")
     ]["Amount"].sum()
 
+    # Net variance
     net_variance = income_actual - actual_expenses
 
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -742,8 +747,12 @@ with tab_dashboard:
     col4.metric("Income Actual", f"${income_actual:,.0f}")
     col5.metric("Money Left to Spend", f"${net_variance:,.0f}")
 
+    # -----------------------------
+    # EXPECTED VS ACTUAL BY CATEGORY (EXPENSES ONLY)
+    # -----------------------------
     st.subheader("📊 Expected vs Actual by Category")
 
+    # 🔧 Remove Mortgage only for this chart
     chart_df = expense_df[~expense_df["Category"].str.contains("Mortgage", case=False, na=False)]
 
     summary_df = (
@@ -763,6 +772,9 @@ with tab_dashboard:
     fig_summary.update_layout(template="plotly_white")
     st.plotly_chart(fig_summary, width="stretch")
 
+    # -----------------------------
+    # MONTHLY SPENDING TREND (ACTUAL ONLY)
+    # -----------------------------
     st.subheader("📈 Monthly Spending Trend (Actual)")
 
     monthly_trend = (
@@ -782,6 +794,9 @@ with tab_dashboard:
     fig_trend.update_layout(template="plotly_white")
     st.plotly_chart(fig_trend, width="stretch")
 
+    # -----------------------------
+    # TOP 10 SPENDING (NO INCOME OR MORTGAGE)
+    # -----------------------------
     st.subheader("🏆 Top 10 Spending Categories")
 
     top10 = (
@@ -809,6 +824,9 @@ with tab_dashboard:
 
     st.plotly_chart(fig_top10, width="stretch")
 
+    # -----------------------------
+    # OVER / UNDER BUDGET (EXPENSES ONLY)
+    # -----------------------------
     st.subheader("💸 Over / Under Budget")
 
     variance_df = (
@@ -830,40 +848,52 @@ with tab_dashboard:
     fig_variance.update_layout(template="plotly_white")
     st.plotly_chart(fig_variance, width="stretch")
 
+    # -----------------------------
+    # ✅ ADD: INCOME / EXPENSE / SUBSCRIPTION TRACKERS
+    # -----------------------------
     st.subheader("🧾 Trackers")
 
+    # Row highlighter helper
     def highlight_rows(row, income_mask, expense_mask, subs_mask):
+        # return list of CSS styles aligned to row columns
         if subs_mask.loc[row.name]:
-            return ["background-color: rgba(255, 235, 59, 0.25)"] * len(row)
+            return ["background-color: rgba(255, 235, 59, 0.25)"] * len(row)  # yellow
         if income_mask.loc[row.name]:
-            return ["background-color: rgba(76, 175, 80, 0.20)"] * len(row)
+            return ["background-color: rgba(76, 175, 80, 0.20)"] * len(row)   # green
         if expense_mask.loc[row.name]:
-            return ["background-color: rgba(244, 67, 54, 0.15)"] * len(row)
+            return ["background-color: rgba(244, 67, 54, 0.15)"] * len(row)   # red
         return [""] * len(row)
 
+    # Masks
     income_mask = df_filtered["Category"].astype(str).str.strip().eq("Income")
     expense_mask = ~df_filtered["Category"].astype(str).str.strip().eq("Income")
     subscription_mask = df_filtered["Category"].astype(str).str.strip().eq("Subscription")
 
+    # ✅ UPDATED: tracker-specific filtered tables (Actual only, per your rules)
     income_display_df = df_filtered[income_mask & (df_filtered["Type"] == "Actual")].copy()
     expense_display_df = df_filtered[expense_mask & (df_filtered["Type"] == "Actual")].copy()
     subs_display_df = df_filtered[subscription_mask & (df_filtered["Type"] == "Actual")].copy()
 
+    # ✅ ADD: tidy-up helper for tracker display only
     def tidy_tracker_display(df_in: pd.DataFrame) -> pd.DataFrame:
         df_out = df_in.copy()
 
+        # Drop empty/unneeded columns if they exist
         cols_to_drop = [c for c in ["Updated", "2/18/26"] if c in df_out.columns]
         if cols_to_drop:
             df_out = df_out.drop(columns=cols_to_drop)
 
+        # Shorten Date (remove time portion)
         if "Date" in df_out.columns:
             df_out["Date"] = pd.to_datetime(df_out["Date"], errors="coerce").dt.date
 
+        # Format Amount as currency with 2 decimals (display only)
         if "Amount" in df_out.columns:
             df_out["Amount"] = df_out["Amount"].apply(lambda x: f"${x:,.2f}")
 
         return df_out
 
+    # Income tracker (Income category only, Actual only)
     income_total_actual = income_display_df["Amount"].sum()
 
     with st.expander("💵 Income Summary (highlighted)"):
@@ -881,6 +911,7 @@ with tab_dashboard:
             f"**Income Total (Actual, current filters):** **${income_total_actual:,.0f}**"
         )
 
+    # Expense tracker (NOT Income category, Actual only)
     expense_total_actual_tracker = expense_display_df["Amount"].sum()
 
     with st.expander("💸 Expenses Summary (highlighted)"):
@@ -898,6 +929,7 @@ with tab_dashboard:
             f"**Expense Total (Actual, current filters):** **${expense_total_actual_tracker:,.0f}**"
         )
 
+    # Subscription tracker (Subscriptions category only, Actual only)
     subs_total_actual = subs_display_df["Amount"].sum()
 
     with st.expander("🔁 Subscription Tracker (highlighted)"):
@@ -915,12 +947,18 @@ with tab_dashboard:
             f"**Subscription Total (Actual, current filters):** **${subs_total_actual:,.0f}**"
         )
 
+    # -----------------------------
+    # RAW DATA — SORTED
+    # -----------------------------
     with st.expander("Show Raw Data"):
         st.dataframe(
             df_filtered.sort_values(["Date", "Title"], ascending=[False, True]),
             width="stretch"
         )
 
+    # -----------------------------
+    # ✅ AI INSIGHTS (DASHBOARD)
+    # -----------------------------
     render_ai_insights(
         df_filtered_local=df_filtered,
         focus_df_local=expense_df,
@@ -930,11 +968,13 @@ with tab_dashboard:
     )
 
 with tab_savings:
+    # ✅ Filters only for Savings tab (independent keys)
     df_filtered = apply_tab_filters(df, "sav")
     selected_months = st.session_state.get("sav_selected_months", MONTH_ORDER)
 
     savings_df = df_filtered[df_filtered["Status"].astype(str).str.strip().eq("Savings")]
 
+    # ✅ FIX: If no months selected (or filters produce empty df), behave like Dashboard (show zeros / empty charts)
     if savings_df.empty:
         st.subheader("📊 Savings Key Metrics")
 
@@ -947,9 +987,10 @@ with tab_savings:
         st.plotly_chart(
             px.bar(pd.DataFrame(columns=["Category", "Amount", "Type"]), x="Category", y="Amount", color="Type", barmode="group").update_layout(template="plotly_white"),
             width="stretch",
-            key="savings_summary_empty"
+            key="savings_summary_empty"  # ✅ add unique key
         )
 
+        # ✅ CHANGE: keep title the same, but show Top 10 TITLES from SUMMARY tab (Status=Savings, Type=Actual)
         st.subheader("🏆 Top 5 Savings Categories")
 
         savings_titles_top10 = (
@@ -981,7 +1022,7 @@ with tab_savings:
         st.plotly_chart(
             px.bar(pd.DataFrame(columns=["Category", "Variance"]), x="Category", y="Variance", color="Variance").update_layout(template="plotly_white"),
             width="stretch",
-            key="savings_variance_empty"
+            key="savings_variance_empty"  # ✅ add unique key
         )
 
         with st.expander("Show Savings Raw Data"):
@@ -990,6 +1031,9 @@ with tab_savings:
                 width="stretch"
             )
 
+        # -----------------------------
+        # ✅ AI INSIGHTS (SAVINGS)
+        # -----------------------------
         render_ai_insights(
             df_filtered_local=df_filtered,
             focus_df_local=savings_df,
@@ -999,6 +1043,9 @@ with tab_savings:
         )
 
     else:
+        # -----------------------------
+        # KEY METRICS — SAVINGS ONLY
+        # -----------------------------
         st.subheader("📊 Savings Key Metrics")
 
         expected_savings = savings_df[savings_df["Type"] == "Expected"]["Amount"].sum()
@@ -1010,6 +1057,9 @@ with tab_savings:
         s2.metric("Actual Savings", f"${actual_savings:,.0f}")
         s3.metric("Savings EvA", f"${variance_savings:,.0f}")
 
+        # -----------------------------
+        # EXPECTED VS ACTUAL SAVINGS BY CATEGORY
+        # -----------------------------
         st.subheader("📊 Expected vs Actual Savings by Category")
 
         savings_summary_df = (
@@ -1029,6 +1079,9 @@ with tab_savings:
         fig_savings_summary.update_layout(template="plotly_white")
         st.plotly_chart(fig_savings_summary, width="stretch")
 
+        # -----------------------------
+        # ✅ CHANGE: keep title the same, but show Top 10 TITLES from SUMMARY tab (Status=Savings, Type=Actual)
+        # -----------------------------
         st.subheader("🏆 Top 5 Savings Categories")
 
         savings_titles_top10 = (
@@ -1056,6 +1109,9 @@ with tab_savings:
 
         st.plotly_chart(fig_savings_titles_top10, width="stretch")
 
+        # -----------------------------
+        # OVER / UNDER SAVINGS
+        # -----------------------------
         st.subheader("💸 Over / Under Savings")
 
         savings_variance_df = (
@@ -1077,12 +1133,18 @@ with tab_savings:
         fig_savings_variance.update_layout(template="plotly_white")
         st.plotly_chart(fig_savings_variance, width="stretch")
 
+        # -----------------------------
+        # ✅ ADD: RAW DATA — SAVINGS ONLY (at bottom)
+        # -----------------------------
         with st.expander("Show Savings Raw Data"):
             st.dataframe(
                 savings_df.sort_values(["Date", "Title"], ascending=[False, True]),
                 width="stretch"
             )
 
+        # -----------------------------
+        # ✅ AI INSIGHTS (SAVINGS)
+        # -----------------------------
         render_ai_insights(
             df_filtered_local=df_filtered,
             focus_df_local=savings_df,
