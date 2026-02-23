@@ -757,12 +757,33 @@ with tab_savings:
             key="savings_summary_empty"  # ✅ add unique key
         )
 
+        # ✅ CHANGE: keep title the same, but show Top 10 TITLES from SUMMARY tab (Status=Savings, Type=Actual)
         st.subheader("🏆 Top 5 Savings Categories")
-        st.plotly_chart(
-            px.bar(pd.DataFrame(columns=["Category", "Amount"]), x="Amount", y="Category", orientation="h").update_layout(template="plotly_white", yaxis=dict(autorange="reversed")),
-            width="stretch",
-            key="savings_top5_empty"  # ✅ add unique key
+
+        savings_titles_top10 = (
+            df[
+                (df["Status"].astype(str).str.strip().eq("Savings")) &
+                (df["Type"].astype(str).str.strip().eq("Actual"))
+            ]
+            .groupby("Title", as_index=False)["Amount"]
+            .sum()
+            .sort_values("Amount", ascending=False)
+            .head(10)
         )
+
+        fig_savings_titles_top10 = px.bar(
+            savings_titles_top10,
+            x="Amount",
+            y="Title",
+            orientation="h",
+        )
+
+        fig_savings_titles_top10.update_layout(
+            template="plotly_white",
+            yaxis=dict(autorange="reversed")
+        )
+
+        st.plotly_chart(fig_savings_titles_top10, width="stretch", key="savings_titles_top10_empty")
 
         st.subheader("💸 Over / Under Savings")
         st.plotly_chart(
@@ -826,31 +847,34 @@ with tab_savings:
         st.plotly_chart(fig_savings_summary, width="stretch")
 
         # -----------------------------
-        # TOP 5 SAVINGS CATEGORIES (ACTUAL ONLY)
+        # ✅ CHANGE: keep title the same, but show Top 10 TITLES from SUMMARY tab (Status=Savings, Type=Actual)
         # -----------------------------
         st.subheader("🏆 Top 5 Savings Categories")
 
-        top5_savings = (
-            savings_df[savings_df["Type"] == "Actual"]
-            .groupby("Category", as_index=False)["Amount"]
+        savings_titles_top10 = (
+            df[
+                (df["Status"].astype(str).str.strip().eq("Savings")) &
+                (df["Type"].astype(str).str.strip().eq("Actual"))
+            ]
+            .groupby("Title", as_index=False)["Amount"]
             .sum()
             .sort_values("Amount", ascending=False)
-            .head(5)
+            .head(10)
         )
 
-        fig_top5_savings = px.bar(
-            top5_savings,
+        fig_savings_titles_top10 = px.bar(
+            savings_titles_top10,
             x="Amount",
-            y="Category",
+            y="Title",
             orientation="h",
         )
 
-        fig_top5_savings.update_layout(
+        fig_savings_titles_top10.update_layout(
             template="plotly_white",
             yaxis=dict(autorange="reversed")
         )
 
-        st.plotly_chart(fig_top5_savings, width="stretch")
+        st.plotly_chart(fig_savings_titles_top10, width="stretch")
 
         # -----------------------------
         # OVER / UNDER SAVINGS
