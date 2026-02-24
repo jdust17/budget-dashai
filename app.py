@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go  # ✅ needed for progress-bar style charts
 
 # -----------------------------
 # PAGE SETUP
@@ -92,10 +93,8 @@ df["Month"] = pd.Categorical(df["Month"], categories=MONTH_ORDER, ordered=True)
 # FILTER OPTIONS (COMPUTED ONCE)
 # -----------------------------
 quarter_options = df["Quarter"].dropna()
-# ✅ FIX: remove literal "NaT" if it somehow exists
 quarter_options = quarter_options[quarter_options != "NaT"].unique().tolist()
 
-# Sort quarters chronologically
 try:
     quarter_options = sorted(quarter_options, key=lambda x: pd.Period(x).start_time)
 except Exception:
@@ -599,7 +598,6 @@ def render_ai_insights(
         focus_mode=focus_mode
     )
 
-    # ✅ "Insight Snapshot" (always renders)
     st.markdown("**Insight Snapshot (local):**")
 
     total_expected = payload["totals"]["expected"]
@@ -646,7 +644,6 @@ def render_ai_insights(
         st.info("Transaction snapshot: insufficient Actual rows for this selection.")
 
     import time
-
     period_key = f"{mode}|{focus_mode}|" + ",".join(selected_months_local)
 
     ts_key = f"{key_prefix}_ai_last_run_ts_{mode}"
@@ -663,7 +660,6 @@ def render_ai_insights(
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
                 result = generate_ai_insights_cached(period_key=period_key, payload=payload, focus_mode=focus_mode)
-
                 if isinstance(result, dict) and "error" in result and "Rate limited" in result["error"]:
                     if attempt < max_attempts:
                         wait_s = 2 ** attempt
@@ -984,63 +980,136 @@ with tab_goals:
     # ✅ Filters only for Goals tab (independent keys)
     df_filtered = apply_tab_filters(df, "gol")
 
-    # -----------------------------
-    # GOALS: Savings Goals (Actual)
-    # -----------------------------
-    st.subheader("🎯 Savings Goals Progress (Actual)")
+    def _progress_bar_figure(progress_df: pd.DataFrame, title: str) -> go.Figure:
+        """
+        progress_df columns required:
+          - Title
+          - Expected
+          - Actual
+          - FillPct (0..100)
+          - Color ("green"/"red")
+        """
+        if progress_df.empty:
+            fig = go.Figure()
+            fig.update_layout(template="plotly_white", title=title)
+            return fig
 
-    goals_savings = df_filtered[
-        (df_filtered["Category"].astype(str).str.strip().eq("Savings Goals")) &
-        (df_filtered["Type"].astype(str).str.strip().eq("Actual"))
-    ].copy()
+        # Background (100%) + overlay filled bar
+        fig = go.Figure()
 
-    if goals_savings.empty:
+        fig.add_trace(
+            go.Bar(
+                x=[100] * len(progress_df),
+                y=progress_df["Title"],
+                orientation="h",
+                marker=dict(color="rgba(0,0,0,0.08)"),
+                hoverinfo="skip",
+                showlegend=False,
+                name="Expected baseline"
+            )
+        )
+
+        color_map = {"green": "#2e7d32", "red": "#c62828"}
+        fig.add_trace(
+            go.Bar(
+                x=progress_df["FillPct"],
+                y=progress_df["Title"],
+                orientation="h",
+                marker=dict(color=[color_map.get(c, "#2e7d32") for c in progress_df["Color"]]),
+                customdata=progress_df[["Expected", "Actual", "FillPct"]].values,
+                hovertemplate=(
+                    "Title: %{y}<br>"
+                    "Expected: $%{customdata[0]:,.0f}<br>"
+                    "Actual: $%{customdata[1]:,.0f}<br>"
+                    "Filled: %{customdata[2]:.1f}%<extra></extra>"
+                ),
+                showlegend=False,
+                name="Progress"
+            )
+        )
+
+        fig.update_layout(
+            template="plotly_white",
+            title=title,
+            barmode="overlay",
+            xaxis=dict(range=[0, 100], title="Progress (filled %)"),
+            yaxis=dict(title=""),
+            height=max(320, 40 * len(progress_df) + 120),
+            margin=dict(l=40, r=20, t=60, b=40),
+        )
+        return fig
+
+    # -----------------------------
+    # GOALS: Savings Goals (Expected vs Actual per Title)
+    # -----------------------------
+    st.subheader("🎯 Savings Goals Progress")
+
+    g_savings = df_filtered[df_filtered["Category"].astype(str).str.strip().eq("Savings Goals")].copy()
+
+    if g_savings.empty:
         st.info("No Savings Goals data for the selected filters yet.")
     else:
-        goals_savings_trend = (
-            goals_savings
-            .groupby(["Month", "Title"], as_index=False)["Amount"]
+        g_savings_sum = (
+            g_savings
+            .groupby(["Title", "Type"], as_index=False)["Amount"]
             .sum()
-            .sort_values("Month")
+            .pivot(index="Title", columns="Type", values="Amount")
+            .fillna(0)
+            .reset_index()
         )
-        fig_goals_savings = px.line(
-            goals_savings_trend,
-            x="Month",
-            y="Amount",
-            color="Title",
-            markers=True
+        g_savings_sum["Expected"] = g_savings_sum.get("Expected", 0).astype(float).abs()
+        g_savings_sum["Actual"] = g_savings_sum.get("Actual", 0).astype(float).abs()
+
+        # ✅ per your rule: "filled" is min/ max, so if Expected is 75% of Actual -> fill 75%
+        denom = g_savings_sum[["Expected", "Actual"]].max(axis=1).replace(0, 1.0)
+        g_savings_sum["FillPct"] = (g_savings_sum[["Expected", "Actual"]].min(axis=1) / denom) * 100
+
+        # ✅ color rules for Savings Goals:
+        # - equal => green
+        # - Actual > Expected => green
+        # - Actual < Expected => red
+        g_savings_sum["Color"] = g_savings_sum.apply(
+            lambda r: "green" if float(r["Actual"]) >= float(r["Expected"]) else "red",
+            axis=1
         )
-        fig_goals_savings.update_layout(template="plotly_white")
-        st.plotly_chart(fig_goals_savings, width="stretch")
+
+        g_savings_sum = g_savings_sum.sort_values("Title").copy()
+        fig = _progress_bar_figure(g_savings_sum[["Title", "Expected", "Actual", "FillPct", "Color"]], "Savings Goals (Expected vs Actual)")
+        st.plotly_chart(fig, width="stretch")
 
     # -----------------------------
-    # GOALS: Debt (Actual)
+    # GOALS: Debt (Expected vs Actual per Title)
     # -----------------------------
-    st.subheader("📉 Debt Paydown Progress (Actual)")
+    st.subheader("📉 Debt Progress")
 
-    goals_debt = df_filtered[
-        (df_filtered["Category"].astype(str).str.strip().eq("Debt")) &
-        (df_filtered["Type"].astype(str).str.strip().eq("Actual"))
-    ].copy()
+    g_debt = df_filtered[df_filtered["Category"].astype(str).str.strip().eq("Debt")].copy()
 
-    if goals_debt.empty:
+    if g_debt.empty:
         st.info("No Debt data for the selected filters yet.")
     else:
-        # Use absolute value so paydown shows as positive progress even if entered as negative
-        goals_debt["Amount"] = goals_debt["Amount"].astype(float).abs()
-
-        goals_debt_trend = (
-            goals_debt
-            .groupby(["Month", "Title"], as_index=False)["Amount"]
+        g_debt_sum = (
+            g_debt
+            .groupby(["Title", "Type"], as_index=False)["Amount"]
             .sum()
-            .sort_values("Month")
+            .pivot(index="Title", columns="Type", values="Amount")
+            .fillna(0)
+            .reset_index()
         )
-        fig_goals_debt = px.line(
-            goals_debt_trend,
-            x="Month",
-            y="Amount",
-            color="Title",
-            markers=True
+        g_debt_sum["Expected"] = g_debt_sum.get("Expected", 0).astype(float).abs()
+        g_debt_sum["Actual"] = g_debt_sum.get("Actual", 0).astype(float).abs()
+
+        denom = g_debt_sum[["Expected", "Actual"]].max(axis=1).replace(0, 1.0)
+        g_debt_sum["FillPct"] = (g_debt_sum[["Expected", "Actual"]].min(axis=1) / denom) * 100
+
+        # ✅ color rules for Debt:
+        # - if Actual < Expected => green
+        # - if Actual > Expected => red
+        # (equal treated as green)
+        g_debt_sum["Color"] = g_debt_sum.apply(
+            lambda r: "green" if float(r["Actual"]) <= float(r["Expected"]) else "red",
+            axis=1
         )
-        fig_goals_debt.update_layout(template="plotly_white")
-        st.plotly_chart(fig_goals_debt, width="stretch")
+
+        g_debt_sum = g_debt_sum.sort_values("Title").copy()
+        fig = _progress_bar_figure(g_debt_sum[["Title", "Expected", "Actual", "FillPct", "Color"]], "Debt (Expected vs Actual)")
+        st.plotly_chart(fig, width="stretch")
