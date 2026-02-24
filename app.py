@@ -40,7 +40,15 @@ def load_data():
 
     # Clean text
     df["Title"] = df["Title"].astype(str).str.strip()
-    df["Category"] = df["Category"].astype(str).str.strip().replace("", "Uncategorized remembering")
+
+    # ✅ FIX: normalize Category so true missing + "nan"/"None" strings don't appear in filters
+    df["Category"] = (
+        df["Category"]
+        .astype(str)
+        .str.strip()
+        .replace({"": "Uncategorized remembering", "nan": "Uncategorized remembering", "None": "Uncategorized remembering"})
+    )
+
     df["Type"] = df["Type"].astype(str).str.strip()
     df["Status"] = df["Status"].astype(str).str.strip()
 
@@ -54,6 +62,10 @@ def load_data():
 
     # Parse dates
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+    # ✅ FIX: drop invalid dates so Quarter doesn't become "NaT" and Month doesn't become NaN
+    df = df[df["Date"].notna()].copy()
+
     df["Month"] = df["Date"].dt.month_name()
 
     # ✅ ADD: Quarter field for filtering + grouping
@@ -84,9 +96,11 @@ df["Month"] = pd.Categorical(df["Month"], categories=MONTH_ORDER, ordered=True)
 quarter_options = (
     df["Quarter"]
     .dropna()
-    .unique()
-    .tolist()
 )
+
+# ✅ FIX: remove literal "NaT" if it somehow exists
+quarter_options = quarter_options[quarter_options != "NaT"].unique().tolist()
+
 # Sort quarters chronologically
 try:
     quarter_options = sorted(quarter_options, key=lambda x: pd.Period(x).start_time)
@@ -98,7 +112,7 @@ category_options = (
     .dropna()
     .astype(str)
     .str.strip()
-    .replace("", "Uncategorized remembering")
+    .replace({"": "Uncategorized remembering", "nan": "Uncategorized remembering", "None": "Uncategorized remembering"})
     .unique()
     .tolist()
 )
