@@ -1135,3 +1135,4 @@ with tab_goals:
         g_debt_sum = g_debt_sum.sort_values("Title").copy()
         fig = _progress_bar_figure(g_debt_sum[["Title", "Expected", "Actual", "FillPct", "Color"]], "Debt (Expected vs Actual)")
         st.plotly_chart(fig, width="stretch")
+
