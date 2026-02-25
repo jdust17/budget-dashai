@@ -1028,32 +1028,34 @@ with tab_goals:
             )
         )
 
-        # ✅ ADD (REQUIRED): Always-visible end-of-bar labels with $ + %
-        label_text = progress_df.apply(
-            lambda r: f"${float(r['Actual']):,.0f} / ${float(r['Expected']):,.0f} ({float(r['FillPct']):.1f}%)",
-            axis=1
-        ).tolist()
-
-        fig.add_trace(
-            go.Scatter(
-                x=[102] * len(progress_df),   # place labels slightly to the right of the 100% baseline
-                y=progress_df["Title"],
-                mode="text",
-                text=label_text,
-                textposition="middle left",
-                hoverinfo="skip",
-                showlegend=False
+        # ✅ ADD: labels at the exact end of the filled bar (with $)
+        # Place annotation at x = FillPct, y = Title.
+        annotations = []
+        for _, r in progress_df.iterrows():
+            label = f"${float(r['Actual']):,.0f} / ${float(r['Expected']):,.0f}"
+            annotations.append(
+                dict(
+                    x=float(r["FillPct"]),
+                    y=str(r["Title"]),
+                    xref="x",
+                    yref="y",
+                    text=label,
+                    showarrow=False,
+                    xanchor="left",   # label extends to the right of bar end
+                    align="left",
+                    xshift=8          # tiny pixel nudge so it doesn't overlap the bar edge
+                )
             )
-        )
 
         fig.update_layout(
             template="plotly_white",
             title=title,
             barmode="overlay",
-            xaxis=dict(range=[0, 112], title="Progress (filled %)"),  # ✅ widened so the labels don't clip
+            xaxis=dict(range=[0, 100], title="Progress (filled %)"),
             yaxis=dict(title=""),
             height=max(320, 40 * len(progress_df) + 120),
             margin=dict(l=40, r=20, t=60, b=40),
+            annotations=annotations,
         )
         return fig
 
