@@ -291,8 +291,8 @@ def build_insight_payload(
         biggest_under_budget = {
             "Category": str(under_sorted.loc[0, "Category"]),
             "delta": _safe_money(under_sorted.loc[0, "delta"]),
-            "Actual": _safe_money(under_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
-            "Expected": _safe_money(under_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
+            "Actual": _safe_money(over_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
+            "Expected": _safe_money(over_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
         }
 
     mom = None
@@ -1047,14 +1047,16 @@ with tab_goals:
                 )
             )
 
+        # ✅ FIX: give the chart a little extra horizontal room so labels fit without needing "Autoscale"
         fig.update_layout(
             template="plotly_white",
             title=title,
             barmode="overlay",
-            xaxis=dict(range=[0, 100], title="Progress (filled %)"),
+            autosize=True,
+            xaxis=dict(range=[0, 120], title="Progress (filled %)"),
             yaxis=dict(title=""),
             height=max(320, 40 * len(progress_df) + 120),
-            margin=dict(l=40, r=20, t=60, b=40),
+            margin=dict(l=40, r=160, t=60, b=40),
             annotations=annotations,
         )
         return fig
