@@ -1028,11 +1028,29 @@ with tab_goals:
             )
         )
 
+        # ✅ ADD (REQUIRED): Always-visible end-of-bar labels with $ + %
+        label_text = progress_df.apply(
+            lambda r: f"${float(r['Actual']):,.0f} / ${float(r['Expected']):,.0f} ({float(r['FillPct']):.1f}%)",
+            axis=1
+        ).tolist()
+
+        fig.add_trace(
+            go.Scatter(
+                x=[102] * len(progress_df),   # place labels slightly to the right of the 100% baseline
+                y=progress_df["Title"],
+                mode="text",
+                text=label_text,
+                textposition="middle left",
+                hoverinfo="skip",
+                showlegend=False
+            )
+        )
+
         fig.update_layout(
             template="plotly_white",
             title=title,
             barmode="overlay",
-            xaxis=dict(range=[0, 100], title="Progress (filled %)"),
+            xaxis=dict(range=[0, 112], title="Progress (filled %)"),  # ✅ widened so the labels don't clip
             yaxis=dict(title=""),
             height=max(320, 40 * len(progress_df) + 120),
             margin=dict(l=40, r=20, t=60, b=40),
