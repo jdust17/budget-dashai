@@ -291,8 +291,8 @@ def build_insight_payload(
         biggest_under_budget = {
             "Category": str(under_sorted.loc[0, "Category"]),
             "delta": _safe_money(under_sorted.loc[0, "delta"]),
-            "Actual": _safe_money(over_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
-            "Expected": _safe_money(over_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
+            "Actual": _safe_money(under_sorted.loc[0, "Actual"]) if "Actual" in under_sorted.columns else 0,
+            "Expected": _safe_money(under_sorted.loc[0, "Expected"]) if "Expected" in under_sorted.columns else 0,
         }
 
     mom = None
@@ -818,12 +818,6 @@ with tab_dashboard:
 
     def tidy_tracker_display(df_in: pd.DataFrame) -> pd.DataFrame:
         df_out = df_in.copy()
-
-        # ✅ NEW: drop blank "Unnamed" columns in Trackers view
-        unnamed_cols = [c for c in df_out.columns if str(c).strip().lower().startswith("unnamed")]
-        if unnamed_cols:
-            df_out = df_out.drop(columns=unnamed_cols)
-
         cols_to_drop = [c for c in ["Updated", "2/18/26"] if c in df_out.columns]
         if cols_to_drop:
             df_out = df_out.drop(columns=cols_to_drop)
@@ -833,16 +827,6 @@ with tab_dashboard:
 
         if "Amount" in df_out.columns:
             df_out["Amount"] = df_out["Amount"].apply(lambda x: f"${x:,.2f}")
-
-        # ✅ NEW: hide Date column in Trackers view
-        if "Date" in df_out.columns:
-            df_out = df_out.drop(columns=["Date"])
-
-        # ✅ NEW: move Month to far left in Trackers view
-        if "Month" in df_out.columns:
-            cols = df_out.columns.tolist()
-            cols = ["Month"] + [c for c in cols if c != "Month"]
-            df_out = df_out[cols]
 
         return df_out
 
@@ -898,6 +882,29 @@ with tab_savings:
             width="stretch",
             key="savings_summary_empty"
         )
+
+        # ✅ ADD: Monthly Savings Trend (Actual) — based on the 4 savings categories
+        st.subheader("📈 Monthly Savings Trend (Actual)")
+        SAVINGS_CATEGORIES_FOR_TREND = ["Retirement Savings", "Education Savings", "Savings Goals", "Health Savings"]
+
+        monthly_savings_trend = (
+            df_filtered[
+                (df_filtered["Type"].astype(str).str.strip().eq("Actual")) &
+                (df_filtered["Category"].astype(str).str.strip().isin(SAVINGS_CATEGORIES_FOR_TREND))
+            ]
+            .groupby("Month", as_index=False)["Amount"]
+            .sum()
+            .sort_values("Month")
+        )
+
+        fig_savings_trend = px.line(
+            monthly_savings_trend,
+            x="Month",
+            y="Amount",
+            markers=True
+        )
+        fig_savings_trend.update_layout(template="plotly_white")
+        st.plotly_chart(fig_savings_trend, width="stretch", key="monthly_savings_trend_empty")
 
         st.subheader("🏆 Top 5 Savings Categories")
         savings_titles_top10 = (
@@ -955,6 +962,29 @@ with tab_savings:
         fig_savings_summary = px.bar(savings_summary_df, x="Category", y="Amount", color="Type", barmode="group")
         fig_savings_summary.update_layout(template="plotly_white")
         st.plotly_chart(fig_savings_summary, width="stretch")
+
+        # ✅ ADD: Monthly Savings Trend (Actual) — based on the 4 savings categories
+        st.subheader("📈 Monthly Savings Trend (Actual)")
+        SAVINGS_CATEGORIES_FOR_TREND = ["Retirement Savings", "Education Savings", "Savings Goals", "Health Savings"]
+
+        monthly_savings_trend = (
+            df_filtered[
+                (df_filtered["Type"].astype(str).str.strip().eq("Actual")) &
+                (df_filtered["Category"].astype(str).str.strip().isin(SAVINGS_CATEGORIES_FOR_TREND))
+            ]
+            .groupby("Month", as_index=False)["Amount"]
+            .sum()
+            .sort_values("Month")
+        )
+
+        fig_savings_trend = px.line(
+            monthly_savings_trend,
+            x="Month",
+            y="Amount",
+            markers=True
+        )
+        fig_savings_trend.update_layout(template="plotly_white")
+        st.plotly_chart(fig_savings_trend, width="stretch")
 
         st.subheader("🏆 Top 5 Savings Categories")
         savings_titles_top10 = (
@@ -1045,7 +1075,6 @@ with tab_goals:
         )
 
         # ✅ ADD: labels at the exact end of the filled bar (with $)
-        # Place annotation at x = FillPct, y = Title.
         annotations = []
         for _, r in progress_df.iterrows():
             label = f"${float(r['Actual']):,.0f} / ${float(r['Expected']):,.0f}"
@@ -1057,22 +1086,20 @@ with tab_goals:
                     yref="y",
                     text=label,
                     showarrow=False,
-                    xanchor="left",   # label extends to the right of bar end
+                    xanchor="left",
                     align="left",
-                    xshift=8          # tiny pixel nudge so it doesn't overlap the bar edge
+                    xshift=8
                 )
             )
 
-        # ✅ FIX: give the chart a little extra horizontal room so labels fit without needing "Autoscale"
         fig.update_layout(
             template="plotly_white",
             title=title,
             barmode="overlay",
-            autosize=True,
-            xaxis=dict(range=[0, 120], title="Progress (filled %)"),
+            xaxis=dict(range=[0, 100], title="Progress (filled %)"),
             yaxis=dict(title=""),
             height=max(320, 40 * len(progress_df) + 120),
-            margin=dict(l=40, r=160, t=60, b=40),
+            margin=dict(l=40, r=20, t=60, b=40),
             annotations=annotations,
         )
         return fig
@@ -1098,14 +1125,9 @@ with tab_goals:
         g_savings_sum["Expected"] = g_savings_sum.get("Expected", 0).astype(float).abs()
         g_savings_sum["Actual"] = g_savings_sum.get("Actual", 0).astype(float).abs()
 
-        # ✅ per your rule: "filled" is min/ max, so if Expected is 75% of Actual -> fill 75%
         denom = g_savings_sum[["Expected", "Actual"]].max(axis=1).replace(0, 1.0)
         g_savings_sum["FillPct"] = (g_savings_sum[["Expected", "Actual"]].min(axis=1) / denom) * 100
 
-        # ✅ color rules for Savings Goals:
-        # - equal => green
-        # - Actual > Expected => green
-        # - Actual < Expected => red
         g_savings_sum["Color"] = g_savings_sum.apply(
             lambda r: "green" if float(r["Actual"]) >= float(r["Expected"]) else "red",
             axis=1
@@ -1139,10 +1161,6 @@ with tab_goals:
         denom = g_debt_sum[["Expected", "Actual"]].max(axis=1).replace(0, 1.0)
         g_debt_sum["FillPct"] = (g_debt_sum[["Expected", "Actual"]].min(axis=1) / denom) * 100
 
-        # ✅ color rules for Debt:
-        # - if Actual < Expected => green
-        # - if Actual > Expected => red
-        # (equal treated as green)
         g_debt_sum["Color"] = g_debt_sum.apply(
             lambda r: "green" if float(r["Actual"]) <= float(r["Expected"]) else "red",
             axis=1
