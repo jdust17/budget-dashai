@@ -818,6 +818,12 @@ with tab_dashboard:
 
     def tidy_tracker_display(df_in: pd.DataFrame) -> pd.DataFrame:
         df_out = df_in.copy()
+
+        # ✅ NEW: drop blank "Unnamed" columns in Trackers view
+        unnamed_cols = [c for c in df_out.columns if str(c).strip().lower().startswith("unnamed")]
+        if unnamed_cols:
+            df_out = df_out.drop(columns=unnamed_cols)
+
         cols_to_drop = [c for c in ["Updated", "2/18/26"] if c in df_out.columns]
         if cols_to_drop:
             df_out = df_out.drop(columns=cols_to_drop)
@@ -827,6 +833,16 @@ with tab_dashboard:
 
         if "Amount" in df_out.columns:
             df_out["Amount"] = df_out["Amount"].apply(lambda x: f"${x:,.2f}")
+
+        # ✅ NEW: hide Date column in Trackers view
+        if "Date" in df_out.columns:
+            df_out = df_out.drop(columns=["Date"])
+
+        # ✅ NEW: move Month to far left in Trackers view
+        if "Month" in df_out.columns:
+            cols = df_out.columns.tolist()
+            cols = ["Month"] + [c for c in cols if c != "Month"]
+            df_out = df_out[cols]
 
         return df_out
 
@@ -1135,4 +1151,3 @@ with tab_goals:
         g_debt_sum = g_debt_sum.sort_values("Title").copy()
         fig = _progress_bar_figure(g_debt_sum[["Title", "Expected", "Actual", "FillPct", "Color"]], "Debt (Expected vs Actual)")
         st.plotly_chart(fig, width="stretch")
-
