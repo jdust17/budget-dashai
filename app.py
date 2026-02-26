@@ -818,6 +818,12 @@ with tab_dashboard:
 
     def tidy_tracker_display(df_in: pd.DataFrame) -> pd.DataFrame:
         df_out = df_in.copy()
+
+        # ✅ DROP: all "Unnamed" columns
+        unnamed_cols = [c for c in df_out.columns if str(c).strip().lower().startswith("unnamed")]
+        if unnamed_cols:
+            df_out = df_out.drop(columns=unnamed_cols)
+
         cols_to_drop = [c for c in ["Updated", "2/18/26"] if c in df_out.columns]
         if cols_to_drop:
             df_out = df_out.drop(columns=cols_to_drop)
@@ -827,6 +833,14 @@ with tab_dashboard:
 
         if "Amount" in df_out.columns:
             df_out["Amount"] = df_out["Amount"].apply(lambda x: f"${x:,.2f}")
+
+        # ✅ HIDE: Date column (for display)
+        if "Date" in df_out.columns:
+            df_out = df_out.drop(columns=["Date"])
+
+        # ✅ MOVE: Month to far left (for display)
+        if "Month" in df_out.columns:
+            df_out = df_out[["Month"] + [c for c in df_out.columns if c != "Month"]]
 
         return df_out
 
@@ -852,7 +866,22 @@ with tab_dashboard:
         st.info(f"**Subscription Total (Actual, current filters):** **${subs_total_actual:,.0f}**")
 
     with st.expander("Show Raw Data"):
-        st.dataframe(df_filtered.sort_values(["Date", "Title"], ascending=[False, True]), width="stretch")
+        raw_sorted = df_filtered.sort_values(["Date", "Title"], ascending=[False, True]).copy()
+
+        # ✅ DROP: all "Unnamed" columns
+        unnamed_cols = [c for c in raw_sorted.columns if str(c).strip().lower().startswith("unnamed")]
+        if unnamed_cols:
+            raw_sorted = raw_sorted.drop(columns=unnamed_cols)
+
+        # ✅ HIDE: Date column
+        if "Date" in raw_sorted.columns:
+            raw_sorted = raw_sorted.drop(columns=["Date"])
+
+        # ✅ MOVE: Month to far left
+        if "Month" in raw_sorted.columns:
+            raw_sorted = raw_sorted[["Month"] + [c for c in raw_sorted.columns if c != "Month"]]
+
+        st.dataframe(raw_sorted, width="stretch")
 
     render_ai_insights(
         df_filtered_local=df_filtered,
