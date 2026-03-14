@@ -12,7 +12,7 @@ st.title("💰 Personal Finance Dashboard")
 # -----------------------------
 # GOOGLE SHEET CSV EXPORT
 # -----------------------------
-SUMMARY_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSCz5enmtipKvIlDtRbmlaZrH96myIi56hLwVPVtHVwNXAncHUV23_qn3RGmk8MDBHLP3aB9VpXADwB/pub?output=csv"
+TRANSACTIONS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSCz5enmtipKvIlDtRbmlaZrH96myIi56hLwVPVtHVwNXAncHUV23_qn3RGmk8MDBHLP3aB9VpXADwB/pubhtml"
 
 # -----------------------------
 # SAFE CSV LOADER
@@ -28,7 +28,7 @@ def load_csv(url):
 # -----------------------------
 @st.cache_data(ttl=60)
 def load_data():
-    df = load_csv(SUMMARY_URL)
+    df = load_csv(TRANSACTIONS_URL)
 
     df.columns = df.columns.str.strip()
 
