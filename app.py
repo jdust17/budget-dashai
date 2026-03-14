@@ -12,7 +12,7 @@ st.title("💰 Personal Finance Dashboard")
 # -----------------------------
 # GOOGLE SHEET CSV EXPORT
 # -----------------------------
-TRANSACTIONS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ5Rk2iynBmgtZ04NSgO4y-1tJwgn8W4CeOZGZiAz6YaWK9A1ojjZjjMp6j3cqwd3qf_fDWEeLM9u8L/pub?output=csv"
+TRANSACTIONS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSCz5enmtipKvIlDtRbmlaZrH96myIi56hLwVPVtHVwNXAncHUV23_qn3RGmk8MDBHLP3aB9VpXADwB/pub?output=csv"
 
 # -----------------------------
 # SAFE CSV LOADER
