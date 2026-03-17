@@ -628,43 +628,43 @@ def render_ai_insights(
 
         top3_df["Amount_raw"] = top3_df["Amount"].astype(float)
         top3_df["pct_raw"] = top3_df["share_of_total_actual"].astype(float)
-        
+
         income_actual_local = df_filtered_local[
             (df_filtered_local["Category"] == "Income") &
             (df_filtered_local["Type"] == "Actual")
         ]["Amount"].sum()
 
-def highlight_risk(row):
-    cat = str(row["Category"]).lower()
-    pct = row["pct_raw"]
+        def highlight_risk(row):
+            cat = str(row["Category"]).lower()
+            pct = row["pct_raw"]
 
-    if "mortgage" in cat and income_actual_local > 0:
-        if row["Amount_raw"] / income_actual_local > 0.30:
-            return ["background-color: rgba(255, 235, 59, 0.4)"] * len(row)
+            if "mortgage" in cat and income_actual_local > 0:
+                if row["Amount_raw"] / income_actual_local > 0.30:
+                    return ["background-color: rgba(255, 235, 59, 0.4)"] * len(row)
 
-    if pct > 20:
-        return ["background-color: rgba(255, 235, 59, 0.4)"] * len(row)
+            if pct > 20:
+                return ["background-color: rgba(255, 235, 59, 0.4)"] * len(row)
 
-    return [""] * len(row)
+            return [""] * len(row)
 
-top3_df["Amount_display"] = top3_df["Amount_raw"].apply(lambda x: f"${int(x):,}")
-top3_df["Pct_display"] = top3_df["pct_raw"].apply(lambda x: f"{float(x):.1f}%")
+        top3_df["Amount_display"] = top3_df["Amount_raw"].apply(lambda x: f"${int(x):,}")
+        top3_df["Pct_display"] = top3_df["pct_raw"].apply(lambda x: f"{float(x):.1f}%")
 
-display_top3 = top3_df[["Category", "Amount_display", "Pct_display"]].rename(
-    columns={
-        "Amount_display": "Amount",
-        "Pct_display": "% of total (Actual)"
-    }
-)
+        display_top3 = top3_df[["Category", "Amount_display", "Pct_display"]].rename(
+            columns={
+                "Amount_display": "Amount",
+                "Pct_display": "% of total (Actual)"
+            }
+        )
 
-styled_top3 = display_top3.style.apply(
-    lambda row: highlight_risk(top3_df.loc[row.name]),
-    axis=1
-)
+        styled_top3 = display_top3.style.apply(
+            lambda row: highlight_risk(top3_df.loc[row.name]),
+            axis=1
+        )
 
-st.dataframe(styled_top3, width="stretch", hide_index=True)
-else:
-    st.info("Top categories: insufficient data for this selection.")
+        st.dataframe(styled_top3, width="stretch", hide_index=True)
+    else:
+        st.info("Top categories: insufficient data for this selection.")
 
     actual_only = focus_df_local[focus_df_local["Type"].astype(str).str.strip().eq("Actual")].copy()
     if not actual_only.empty:
