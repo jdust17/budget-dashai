@@ -726,11 +726,12 @@ with tab_dashboard:
     selected_months = st.session_state.get("dash_selected_months", MONTH_ORDER)
 
     expense_df = df_filtered[~df_filtered["Category"].isin(EXCLUDED_CATEGORIES)]
+    expense_metrics_df = expense_df[expense_df["Status"].astype(str).str.strip().ne("Savings")]
 
     st.subheader("📊 Key Metrics")
 
-    expected_expenses = expense_df[expense_df["Type"] == "Expected"]["Amount"].sum()
-    actual_expenses = expense_df[expense_df["Type"] == "Actual"]["Amount"].sum()
+    expected_expenses = expense_metrics_df[expense_metrics_df["Type"] == "Expected"]["Amount"].sum()
+    actual_expenses = expense_metrics_df[expense_metrics_df["Type"] == "Actual"]["Amount"].sum()
     variance_expenses = actual_expenses - expected_expenses
 
     income_actual = df_filtered[
