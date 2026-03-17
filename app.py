@@ -663,8 +663,8 @@ styled_top3 = display_top3.style.apply(
 )
 
 st.dataframe(styled_top3, width="stretch", hide_index=True)
-    else:
-        st.info("Top categories: insufficient data for this selection.")
+else:
+    st.info("Top categories: insufficient data for this selection.")
 
     actual_only = focus_df_local[focus_df_local["Type"].astype(str).str.strip().eq("Actual")].copy()
     if not actual_only.empty:
