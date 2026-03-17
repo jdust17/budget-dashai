@@ -626,13 +626,13 @@ def render_ai_insights(
     if top3:
         top3_df = pd.DataFrame(top3)[["Category", "Amount", "share_of_total_actual"]].copy()
 
-top3_df["Amount_raw"] = top3_df["Amount"].astype(float)
-top3_df["pct_raw"] = top3_df["share_of_total_actual"].astype(float)
-
-income_actual_local = df_filtered_local[
-    (df_filtered_local["Category"] == "Income") &
-    (df_filtered_local["Type"] == "Actual")
-]["Amount"].sum()
+        top3_df["Amount_raw"] = top3_df["Amount"].astype(float)
+        top3_df["pct_raw"] = top3_df["share_of_total_actual"].astype(float)
+        
+        income_actual_local = df_filtered_local[
+            (df_filtered_local["Category"] == "Income") &
+            (df_filtered_local["Type"] == "Actual")
+        ]["Amount"].sum()
 
 def highlight_risk(row):
     cat = str(row["Category"]).lower()
