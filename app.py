@@ -610,8 +610,8 @@ def render_ai_insights(
         money_left = payload["totals"].get("money_left_to_spend", 0)
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Expected", f"${total_expected:,.0f}")
-        c2.metric("Actual", f"${total_actual:,.0f}")
+        c1.metric("Expected Expenses", f"${total_expected:,.0f}")
+        c2.metric("Actual Expenses", f"${total_actual:,.0f}")
         c3.metric("Over/Under (EvA)", f"${variance:,.0f}", f"{variance_pct:.1f}%")
         c4.metric("Money Left", f"${money_left:,.0f}")
         st.caption(f"Income (Actual): ${income_actual:,.0f}")
@@ -625,10 +625,35 @@ def render_ai_insights(
     top3 = payload.get("top3_categories_actual", [])
     if top3:
         top3_df = pd.DataFrame(top3)[["Category", "Amount", "share_of_total_actual"]].copy()
-        top3_df["Amount"] = top3_df["Amount"].apply(lambda x: f"${int(x):,}")
-        top3_df["% of total (Actual)"] = top3_df["share_of_total_actual"].apply(lambda x: f"{float(x):.1f}%")
-        top3_df = top3_df.drop(columns=["share_of_total_actual"])
-        st.dataframe(top3_df, width="stretch", hide_index=True)
+
+        top3_df["Amount_raw"] = top3_df["Amount"].astype(float)
+        top3_df["pct_raw"] = top3_df["share_of_total_actual"].astype(float)
+
+        income_actual_local = df_filtered_local[
+            (df_filtered_local["Category"] == "Income") &
+            (df_filtered_local["Type"] == "Actual")
+        ]["Amount"].sum()
+
+        def highlight_risk(row):
+            cat = str(row["Category"]).lower()
+            pct = row["pct_raw"]
+
+            if "mortgage" in cat and income_actual_local > 0:
+                if row["Amount_raw"] / income_actual_local > 0.30:
+                    return ["background-color: rgba(255, 235, 59, 0.4)"] * len(row)
+
+            if pct > 20:
+                return ["background-color: rgba(255, 235, 59, 0.4)"] * len(row)
+
+            return [""] * len(row)
+
+        top3_df["Amount"] = top3_df["Amount_raw"].apply(lambda x: f"${int(x):,}")
+        top3_df["% of total (Actual)"] = top3_df["pct_raw"].apply(lambda x: f"{float(x):.1f}%")
+
+        top3_df = top3_df.drop(columns=["share_of_total_actual", "Amount_raw", "pct_raw"])
+
+        styled_top3 = top3_df.style.apply(highlight_risk, axis=1)
+        st.dataframe(styled_top3, width="stretch", hide_index=True)
     else:
         st.info("Top categories: insufficient data for this selection.")
 
@@ -725,7 +750,10 @@ with tab_dashboard:
     df_filtered = apply_tab_filters(df, "dash")
     selected_months = st.session_state.get("dash_selected_months", MONTH_ORDER)
 
-    expense_df = df_filtered[~df_filtered["Category"].isin(EXCLUDED_CATEGORIES)]
+    expense_df = df_filtered[
+        (~df_filtered["Category"].isin(EXCLUDED_CATEGORIES)) &
+        (~df_filtered["Status"].astype(str).str.strip().eq("Savings"))
+    ]
     expense_metrics_df = expense_df[expense_df["Status"].astype(str).str.strip().ne("Savings")]
 
     st.subheader("📊 Key Metrics")
