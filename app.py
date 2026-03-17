@@ -624,7 +624,7 @@ def render_ai_insights(
 
     top3 = payload.get("top3_categories_actual", [])
     if top3:
- top3_df = pd.DataFrame(top3)[["Category", "Amount", "share_of_total_actual"]].copy()
+        top3_df = pd.DataFrame(top3)[["Category", "Amount", "share_of_total_actual"]].copy()
 
 top3_df["Amount_raw"] = top3_df["Amount"].astype(float)
 top3_df["pct_raw"] = top3_df["share_of_total_actual"].astype(float)
