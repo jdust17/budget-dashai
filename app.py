@@ -640,12 +640,12 @@ def render_ai_insights(
 
             if "mortgage" in cat and income_actual_local > 0:
                 if row["Amount_raw"] / income_actual_local > 0.30:
-                    return ["background-color: rgba(255, 235, 59, 0.4)"] * len(row)
+                    return ["background-color: rgba(255, 235, 59, 0.4)"] * 3
 
             if pct > 20:
-                return ["background-color: rgba(255, 235, 59, 0.4)"] * len(row)
+                return ["background-color: rgba(255, 235, 59, 0.4)"] * 3
 
-            return [""] * len(row)
+            return [""] * 3
 
         top3_df["Amount_display"] = top3_df["Amount_raw"].apply(lambda x: f"${int(x):,}")
         top3_df["Pct_display"] = top3_df["pct_raw"].apply(lambda x: f"{float(x):.1f}%")
